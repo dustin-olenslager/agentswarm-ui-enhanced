@@ -110,27 +110,45 @@ agentswarm/
 - **Callback arrays** for events (no EventEmitter pattern)
 
 #### Phase 2 Code Stats:
-- ~2,116 lines of implementation across 8 source files
+- ~2,116 lines of implementation across 8 source files (planner.ts refactored to 330 lines after shared.ts extraction in Phase 3)
 - ~142 lines of prompt (root-planner.md)
 - ~46 unit tests across 3 test files
 - All 3 packages typecheck and build clean
 
 ---
 
-### Phase 3: Full Scale + Run — STATUS: NOT STARTED (0%)
+### Phase 3: Full Scale + Run — STATUS: IN PROGRESS (~20%)
 
-| Step | Description | Status |
-|------|-------------|--------|
-| 3.1 | `packages/orchestrator/subplanner.ts` — recursive subplanners | ❌ NOT STARTED |
-| 3.2 | `packages/orchestrator/reconciler.ts` — periodic green branch | ❌ NOT STARTED |
-| 3.3 | `target-repo/SPEC.md` — Minecraft clone specification | ❌ NOT STARTED |
-| 3.4 | `target-repo/FEATURES.json` — 200+ features pass/fail | ❌ NOT STARTED |
-| 3.5 | `prompts/subplanner.md` and `prompts/reconciler.md` | ❌ NOT STARTED |
-| 3.6 | Freshness mechanisms — scratchpad, auto-summarization | ❌ NOT STARTED |
-| 3.7 | `packages/dashboard` — live web UI | ❌ NOT STARTED |
-| 3.8 | Scale to 50-100 concurrent workers | ❌ NOT STARTED |
-| 3.9 | Run against Minecraft spec for 12-20 hours | ❌ NOT STARTED |
-| 3.10 | Monitor + tune prompts | ❌ NOT STARTED |
+| Step | Description | Status | Details |
+|------|-------------|--------|---------|
+| 3.1 | `packages/orchestrator/subplanner.ts` — recursive subplanners | ✅ DONE | `Subplanner` class with recursive decomposition, `shouldDecompose()` heuristic, `SubplannerConfig`, `aggregateHandoffs()`, `createFailureHandoff()`. Dispatch lock mutex for serialized worker acquisition. Worker timeout on polling. 460 lines. |
+| 3.2 | `packages/orchestrator/reconciler.ts` — periodic green branch | ❌ NOT STARTED | |
+| 3.3 | `target-repo/SPEC.md` — Minecraft clone specification | ❌ NOT STARTED | |
+| 3.4 | `target-repo/FEATURES.json` — 200+ features pass/fail | ❌ NOT STARTED | |
+| 3.5 | `prompts/subplanner.md` and `prompts/reconciler.md` | 🟡 PARTIAL | `prompts/subplanner.md` ✅ DONE (172 lines — identity, decomposition workflow, subtask JSON schema, scope containment, hard constraints, examples, anti-patterns). `prompts/reconciler.md` ❌ NOT STARTED. |
+| 3.6 | Freshness mechanisms — scratchpad, auto-summarization | ❌ NOT STARTED | |
+| 3.7 | `packages/dashboard` — live web UI | ❌ NOT STARTED | |
+| 3.8 | Scale to 50-100 concurrent workers | ❌ NOT STARTED | |
+| 3.9 | Run against Minecraft spec for 12-20 hours | ❌ NOT STARTED | |
+| 3.10 | Monitor + tune prompts | ❌ NOT STARTED | |
+
+#### Phase 3 Completed Work Details:
+
+**New files created:**
+- `packages/orchestrator/src/subplanner.ts` (460 lines) — Full recursive subplanner with dispatch lock mutex, worker timeout, depth-limited recursion.
+- `packages/orchestrator/src/shared.ts` (71 lines) — Extracted shared utilities (`RepoState`, `RawTaskInput`, `readRepoState()`, `parseLLMTaskArray()`) used by both `planner.ts` and `subplanner.ts`.
+- `packages/orchestrator/src/__tests__/subplanner.test.ts` (345 lines) — 32 unit tests for subplanner functions.
+- `prompts/subplanner.md` (172 lines) — Subplanner system prompt.
+
+**Modified files:**
+- `packages/orchestrator/src/planner.ts` — Refactored to import from `shared.ts`, added dispatch lock mutex and worker timeout (330 lines, was 385).
+- `packages/orchestrator/src/index.ts` — Added barrel exports for `subplanner` and `shared` modules.
+- `packages/core/src/types.ts` — Added `apiKey?: string` to `HarnessConfig.llm`.
+- `packages/orchestrator/src/config.ts` — Added `apiKey` env var support.
+
+**Known follow-ups identified by Oracle review:**
+- Unbounded concurrency fan-out in subtask dispatch (Medium) — all subtasks launch concurrently; at depth-3 recursion could fan to ~1000 LLM calls. Consider adding concurrency limiter.
+- `shouldDecompose` heuristic is simplistic (Minor) — scope size is a poor proxy for complexity.
 
 ---
 
@@ -140,17 +158,24 @@ agentswarm/
 |-------|----------|--------------|
 | **Phase 1: Foundation** | ~90% | E2E test not validated on live Modal infra |
 | **Phase 2: Multi-Agent Core** | ✅ 100% | Complete — all modules built, tested, building clean |
-| **Phase 3: Full Scale + Run** | 0% | Subplanners, reconciler, dashboard, target repo, Minecraft spec all unbuilt |
+| **Phase 3: Full Scale + Run** | ~20% | Subplanner + prompt done. Remaining: reconciler, dashboard, target repo, Minecraft spec, scaling |
+
+#### Overall Code Stats (as of Phase 3.1 completion):
+- **Implementation**: ~2,977 lines across 10 source files (8 from Phase 2 + shared.ts + subplanner.ts)
+- **Prompts**: ~314 lines (root-planner.md 142 + subplanner.md 172)
+- **Tests**: 78 tests across 4 test files (46 Phase 2 + 32 subplanner)
+- **All 3 packages**: typecheck ✅, build ✅, tests ✅
 
 ## Recommended Next Steps (Priority Order)
 
 1. **Validate Phase 1 E2E** — Run `scripts/test_sandbox.py basic` and `server` tests against Modal to confirm the sandbox pipeline works end-to-end.
 2. **Build Phase 3 foundations** — Start with `target-repo/SPEC.md` (Minecraft clone spec) and `target-repo/FEATURES.json` (200+ features) since the planner reads these at runtime.
-3. **Implement `subplanner.ts`** — Recursive subplanner spawning for complex task decomposition.
+3. ~~**Implement `subplanner.ts`**~~ — ✅ DONE. Recursive subplanner with dispatch lock, worker timeout, shared.ts extraction.
 4. **Implement `reconciler.ts`** — Periodic green branch sweep to keep main stable.
-5. **Write `prompts/subplanner.md` and `prompts/reconciler.md`** — System prompts for the two new agent roles.
+5. **Write `prompts/reconciler.md`** — System prompt for the reconciler agent role. (~~`subplanner.md`~~ ✅ DONE.)
 6. **Build `packages/dashboard`** — Live web UI for monitoring the swarm.
 7. **Scale testing** — Ramp to 50-100 concurrent workers and run against Minecraft spec.
+8. **Address subplanner follow-ups** — Add concurrency limiter for subtask fan-out, improve `shouldDecompose` heuristic.
 
 ---
 
