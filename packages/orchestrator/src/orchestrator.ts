@@ -16,6 +16,8 @@ import { MergeQueue } from "./merge-queue.js";
 import { Monitor } from "./monitor.js";
 import { Planner } from "./planner.js";
 import { Reconciler } from "./reconciler.js";
+import { createPokeNotifier } from "./poke-notifier.js";
+import { PokeStateWriter } from "./poke-state-writer.js";
 
 const logger = createLogger("orchestrator", "root-planner");
 
@@ -188,6 +190,20 @@ export async function createOrchestrator(
   if (cb?.onEmptyDiff) monitor.onEmptyDiff(cb.onEmptyDiff);
   if (cb?.onMetricsUpdate) monitor.onMetricsUpdate(cb.onMetricsUpdate);
   if (cb?.onTaskStatusChange) taskQueue.onStatusChange(cb.onTaskStatusChange);
+
+  // --- Poke state writer (writes metrics/tasks to disk for MCP server) ---
+  const stateWriter = new PokeStateWriter();
+  monitor.onMetricsUpdate((snap) => stateWriter.writeMetrics(snap));
+  taskQueue.onStatusChange(() => stateWriter.writeTasks(taskQueue.getAll()));
+
+  // --- Poke notifications (opt-in via POKE_NOTIFICATIONS=true) ---
+  const pokeNotifier = createPokeNotifier();
+  monitor.onWorkerTimeout((wid, tid) => pokeNotifier.onWorkerTimeout(wid, tid));
+  monitor.onEmptyDiff((wid, tid) => pokeNotifier.onEmptyDiff(wid, tid));
+  monitor.onMetricsUpdate((snap) => pokeNotifier.onMetricsUpdate(snap));
+  reconciler.onSweepComplete((tasks) => pokeNotifier.onSweepComplete(tasks));
+  reconciler.onError((err) => pokeNotifier.onError(err));
+  planner.onError((err) => pokeNotifier.onError(err));
 
   // --- Instance ---
   let started = false;
