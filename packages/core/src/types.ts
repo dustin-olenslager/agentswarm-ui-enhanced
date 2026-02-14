@@ -63,6 +63,7 @@ export interface HarnessConfig {
     model: string;              // Model name (e.g. "glm-5")
     maxTokens: number;
     temperature: number;
+    apiKey?: string;            // API key for authenticated endpoints (e.g. RunPod)
   };
   git: {
     repoUrl: string;            // Target repo URL

@@ -12,10 +12,11 @@ const ALLOWED_MERGE_STRATEGIES = ["fast-forward", "rebase", "merge-commit"] as c
 let cachedConfig: OrchestratorConfig | null = null;
 
 export function loadConfig(): OrchestratorConfig {
-  const llmEndpoint = process.env.LLM_ENDPOINT;
-  if (!llmEndpoint) {
-    throw new Error("Missing required env: LLM_ENDPOINT");
+  const runpodEndpointId = process.env.RUNPOD_ENDPOINT_ID;
+  if (!runpodEndpointId) {
+    throw new Error("Missing required env: RUNPOD_ENDPOINT_ID");
   }
+  const llmEndpoint = `https://api.runpod.ai/v2/${runpodEndpointId}/openai`;
 
   const gitRepoUrl = process.env.GIT_REPO_URL;
   if (!gitRepoUrl) {
@@ -38,6 +39,7 @@ export function loadConfig(): OrchestratorConfig {
       model: process.env.LLM_MODEL || "glm-5",
       maxTokens: Number(process.env.LLM_MAX_TOKENS) || 8192,
       temperature: Number(process.env.LLM_TEMPERATURE) || 0.7,
+      apiKey: process.env.RUNPOD_API_KEY,
     },
     git: {
       repoUrl: gitRepoUrl,

@@ -24,7 +24,7 @@ function withEnv(env: Record<string, string>, fn: () => void): void {
 
 // Required env vars for valid config
 const REQUIRED_ENV = {
-  LLM_ENDPOINT: "http://localhost:8000",
+  RUNPOD_ENDPOINT_ID: "test-endpoint-id",
   GIT_REPO_URL: "https://github.com/test/repo",
 };
 
@@ -100,18 +100,18 @@ describe("config", () => {
     });
   });
 
-  it("throws on missing LLM_ENDPOINT", () => {
+  it("throws on missing RUNPOD_ENDPOINT_ID", () => {
     withEnv({ GIT_REPO_URL: REQUIRED_ENV.GIT_REPO_URL }, () => {
-      delete process.env.LLM_ENDPOINT;
+      delete process.env.RUNPOD_ENDPOINT_ID;
       assert.throws(
         () => loadConfig(),
-        (err: Error) => err.message === "Missing required env: LLM_ENDPOINT"
+        (err: Error) => err.message === "Missing required env: RUNPOD_ENDPOINT_ID"
       );
     });
   });
 
   it("throws on missing GIT_REPO_URL", () => {
-    withEnv({ LLM_ENDPOINT: REQUIRED_ENV.LLM_ENDPOINT }, () => {
+    withEnv({ RUNPOD_ENDPOINT_ID: REQUIRED_ENV.RUNPOD_ENDPOINT_ID }, () => {
       delete process.env.GIT_REPO_URL;
       assert.throws(
         () => loadConfig(),
