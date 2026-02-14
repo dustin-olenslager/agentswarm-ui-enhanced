@@ -60,7 +60,7 @@ export class LLMClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
+        ...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
       },
       body: JSON.stringify({
         model: overrides?.model ?? this.config.model,

@@ -284,7 +284,7 @@ async def test_full_agent(glm5_endpoint: str):
         "model": "glm-5",
         "maxTokens": 4096,
         "temperature": 0.7,
-        "apiKey": os.environ.get("RUNPOD_API_KEY", ""),
+        "apiKey": os.environ.get("LLM_API_KEY", ""),
     }
 
     # Check if sandbox package is built

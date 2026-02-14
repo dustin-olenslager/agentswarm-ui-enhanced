@@ -24,8 +24,7 @@ function withEnv(env: Record<string, string>, fn: () => void): void {
 
 // Required env vars for valid config
 const REQUIRED_ENV = {
-  RUNPOD_ENDPOINT_ID: "test-endpoint-id",
-  RUNPOD_API_KEY: "test-api-key",
+  LLM_BASE_URL: "https://pod-abc123-8000.proxy.runpod.net/v1",
   GIT_REPO_URL: "https://github.com/test/repo",
 };
 
@@ -98,28 +97,18 @@ describe("config", () => {
     });
   });
 
-  it("throws on missing RUNPOD_ENDPOINT_ID", () => {
-    withEnv({ RUNPOD_API_KEY: REQUIRED_ENV.RUNPOD_API_KEY, GIT_REPO_URL: REQUIRED_ENV.GIT_REPO_URL }, () => {
-      delete process.env.RUNPOD_ENDPOINT_ID;
+  it("throws on missing LLM_BASE_URL", () => {
+    withEnv({ GIT_REPO_URL: REQUIRED_ENV.GIT_REPO_URL }, () => {
+      delete process.env.LLM_BASE_URL;
       assert.throws(
         () => loadConfig(),
-        (err: Error) => err.message === "Missing required env: RUNPOD_ENDPOINT_ID"
-      );
-    });
-  });
-
-  it("throws on missing RUNPOD_API_KEY", () => {
-    withEnv({ RUNPOD_ENDPOINT_ID: REQUIRED_ENV.RUNPOD_ENDPOINT_ID, GIT_REPO_URL: REQUIRED_ENV.GIT_REPO_URL }, () => {
-      delete process.env.RUNPOD_API_KEY;
-      assert.throws(
-        () => loadConfig(),
-        (err: Error) => err.message === "Missing required env: RUNPOD_API_KEY"
+        (err: Error) => err.message === "Missing required env: LLM_BASE_URL"
       );
     });
   });
 
   it("throws on missing GIT_REPO_URL", () => {
-    withEnv({ RUNPOD_ENDPOINT_ID: REQUIRED_ENV.RUNPOD_ENDPOINT_ID, RUNPOD_API_KEY: REQUIRED_ENV.RUNPOD_API_KEY }, () => {
+    withEnv({ LLM_BASE_URL: REQUIRED_ENV.LLM_BASE_URL }, () => {
       delete process.env.GIT_REPO_URL;
       assert.throws(
         () => loadConfig(),
@@ -128,11 +117,32 @@ describe("config", () => {
     });
   });
 
-  it("constructs RunPod endpoint URL correctly", () => {
-    withEnv(REQUIRED_ENV, () => {
+  it("normalizes LLM_BASE_URL - strips trailing slash and /v1 suffix", () => {
+    withEnv({ ...REQUIRED_ENV, LLM_BASE_URL: "https://pod-abc123-8000.proxy.runpod.net/v1/" }, () => {
       const config = loadConfig();
-      assert.strictEqual(config.llm.endpoint, "https://api.runpod.ai/v2/test-endpoint-id/openai");
-      assert.strictEqual(config.llm.apiKey, "test-api-key");
+      assert.strictEqual(config.llm.endpoint, "https://pod-abc123-8000.proxy.runpod.net");
+    });
+  });
+
+  it("normalizes LLM_BASE_URL - no /v1 suffix passes through", () => {
+    withEnv({ ...REQUIRED_ENV, LLM_BASE_URL: "https://pod-abc123-8000.proxy.runpod.net" }, () => {
+      const config = loadConfig();
+      assert.strictEqual(config.llm.endpoint, "https://pod-abc123-8000.proxy.runpod.net");
+    });
+  });
+
+  it("LLM_API_KEY defaults to empty string when not set", () => {
+    withEnv(REQUIRED_ENV, () => {
+      delete process.env.LLM_API_KEY;
+      const config = loadConfig();
+      assert.strictEqual(config.llm.apiKey, "");
+    });
+  });
+
+  it("LLM_API_KEY is used when set", () => {
+    withEnv({ ...REQUIRED_ENV, LLM_API_KEY: "my-secret-key" }, () => {
+      const config = loadConfig();
+      assert.strictEqual(config.llm.apiKey, "my-secret-key");
     });
   });
 
