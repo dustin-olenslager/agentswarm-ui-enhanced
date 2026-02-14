@@ -1,4 +1,4 @@
-# Repository Conventions (Template)
+# Repository Conventions
 
 ## Document Ownership
 - Type: User input to swarm.
@@ -11,22 +11,25 @@
 - If scope is insufficient, report gap explicitly and propose a bounded follow-up.
 
 ## Code Style
+- Use strict TypeScript settings and no implicit `any`.
 - Follow existing naming, module boundaries, and patterns in this repository.
-- Avoid placeholder code, TODO stubs, and disabled checks.
+- Avoid placeholder code, unfinished stubs, and disabled checks.
 - Keep functions small and readable; prefer explicit types.
 
 ## Dependencies
-- Allowed: `<list allowed runtime/test deps or "none without approval">`.
+- Allowed: `three`, `vite`, `typescript`, `vitest`, `playwright`, and tiny utility packages with clear rationale.
+- Banned without explicit user approval: large frameworks, full physics engines, and networking stacks not required by current milestone.
 - Do not introduce new dependencies without a clear justification in handoff.
 
 ## Testing Policy
 - Run targeted tests relevant to changed files before completion.
 - Run all acceptance-test commands in `SPEC.md` before final handoff.
+- Add or update tests for terrain determinism, block edits, and persistence when touching those systems.
 - Never delete or weaken tests to make failures disappear.
 
 ## Commit Expectations
 - Make focused commits that map directly to acceptance tests.
-- Commit message format: `<e.g. feat(scope): concise summary>`.
+- Commit message format: `type(scope): concise summary`.
 - Include brief rationale in commit body when behavior changes are non-obvious.
 
 ## Safety / Quality
