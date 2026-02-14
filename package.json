@@ -1,0 +1,17 @@
+{
+  "name": "agentswarm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-agent coding harness",
+  "scripts": {
+    "build": "turbo run build",
+    "clean": "turbo run clean",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.5.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
