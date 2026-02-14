@@ -20,6 +20,19 @@ importers:
 
   packages/core: {}
 
+  packages/orchestrator:
+    dependencies:
+      '@agentswarm/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.11
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
   packages/sandbox:
     dependencies:
       '@agentswarm/core':
