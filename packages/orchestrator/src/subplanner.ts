@@ -6,7 +6,7 @@ import type { WorkerPool } from "./worker-pool.js";
 import type { MergeQueue } from "./merge-queue.js";
 import type { Monitor } from "./monitor.js";
 import { LLMClient, type LLMMessage } from "./llm-client.js";
-import { type RepoState, type RawTaskInput, readRepoState, parseLLMTaskArray } from "./shared.js";
+import { type RepoState, type RawTaskInput, readRepoState, parseLLMTaskArray, ConcurrencyLimiter } from "./shared.js";
 
 const logger = createLogger("subplanner", "subplanner");
 
@@ -139,7 +139,7 @@ export class Subplanner {
   private systemPrompt: string;
   private targetRepoPath: string;
 
-  private dispatchLock: Promise<void> = Promise.resolve();
+  private dispatchLimiter: ConcurrencyLimiter;
 
   private subtaskCreatedCallbacks: ((subtask: Task, parentId: string) => void)[];
   private subtaskCompletedCallbacks: ((subtask: Task, handoff: Handoff, parentId: string) => void)[];
@@ -163,6 +163,8 @@ export class Subplanner {
     this.monitor = monitor;
     this.systemPrompt = systemPrompt;
     this.targetRepoPath = config.targetRepoPath;
+
+    this.dispatchLimiter = new ConcurrencyLimiter(config.maxWorkers);
 
     this.llmClient = new LLMClient({
       endpoint: config.llm.endpoint,
@@ -378,19 +380,7 @@ export class Subplanner {
   }
 
   private async dispatchToWorker(subtask: Task): Promise<{ subtask: Task; handoff: Handoff }> {
-    let releaseLock: () => void;
-    const waitForLock = this.dispatchLock;
-    this.dispatchLock = new Promise((resolve) => { releaseLock = resolve; });
-    await waitForLock;
-
-    const deadline = Date.now() + this.config.workerTimeout * 1000;
-    while (this.workerPool.getAvailableWorkers().length === 0) {
-      if (Date.now() > deadline) {
-        releaseLock!();
-        throw new Error(`Timed out waiting for available worker for subtask ${subtask.id}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+    await this.dispatchLimiter.acquire();
 
     try {
       await createBranch(subtask.branch, this.targetRepoPath);
@@ -398,10 +388,8 @@ export class Subplanner {
       // Branch may already exist
     }
 
-    const availableWorker = this.workerPool.getAvailableWorkers()[0];
-    this.taskQueue.assignTask(subtask.id, availableWorker.id);
+    this.taskQueue.assignTask(subtask.id, `ephemeral-${subtask.id}`);
     this.taskQueue.startTask(subtask.id);
-    releaseLock!();
 
     try {
       const handoff = await this.workerPool.assignTask(subtask);
@@ -433,6 +421,8 @@ export class Subplanner {
         error: err.message,
       });
       throw err;
+    } finally {
+      this.dispatchLimiter.release();
     }
   }
 

@@ -7,7 +7,6 @@ const logger = createLogger("monitor", "root-planner");
 
 export interface MonitorConfig {
   healthCheckInterval: number;
-  stuckWorkerThreshold: number;
   workerTimeout: number;
 }
 
@@ -25,10 +24,8 @@ export class Monitor {
   private mergeSuccesses: number;
   private startTime: number;
 
-  private onStuckCallbacks: ((sandboxId: string, lastProgress: string) => void)[];
-  private onTimeoutCallbacks: ((sandboxId: string, taskId: string) => void)[];
-  private onEmptyDiffCallbacks: ((sandboxId: string, taskId: string) => void)[];
-  private onUnhealthyCallbacks: ((sandboxId: string) => void)[];
+  private onTimeoutCallbacks: ((workerId: string, taskId: string) => void)[];
+  private onEmptyDiffCallbacks: ((workerId: string, taskId: string) => void)[];
   private onMetricsCallbacks: ((snapshot: MetricsSnapshot) => void)[];
 
   constructor(config: MonitorConfig, workerPool: WorkerPool, taskQueue: TaskQueue) {
@@ -45,10 +42,8 @@ export class Monitor {
     this.mergeSuccesses = 0;
     this.startTime = Date.now();
 
-    this.onStuckCallbacks = [];
     this.onTimeoutCallbacks = [];
     this.onEmptyDiffCallbacks = [];
-    this.onUnhealthyCallbacks = [];
     this.onMetricsCallbacks = [];
   }
 
@@ -57,8 +52,8 @@ export class Monitor {
     this.running = true;
     this.startTime = Date.now();
 
-    this.pollTimer = setInterval(async () => {
-      await this.pollAllWorkers();
+    this.pollTimer = setInterval(() => {
+      this.poll();
     }, this.config.healthCheckInterval * 1000);
 
     logger.info("Monitor started", { interval: this.config.healthCheckInterval });
@@ -77,32 +72,13 @@ export class Monitor {
     return this.running;
   }
 
-  async pollAllWorkers(): Promise<void> {
+  poll(): void {
     const workers = this.workerPool.getAllWorkers();
 
     for (const worker of workers) {
-      const health = await this.workerPool.checkWorkerHealth(worker.id);
-
-      if (!health) {
-        if (worker.sandboxStatus.status === "error") {
-          for (const cb of this.onUnhealthyCallbacks) {
-            cb(worker.id);
-          }
-        }
-        continue;
-      }
-
-      if (this.isWorkerStuck(worker)) {
-        const progress = worker.sandboxStatus.progress || "unknown";
-        logger.warn("Worker stuck", { sandboxId: worker.id, taskId: worker.currentTask?.id, lastProgress: progress });
-        for (const cb of this.onStuckCallbacks) {
-          cb(worker.id, progress);
-        }
-      }
-
       if (this.isWorkerTimedOut(worker)) {
-        const taskId = worker.currentTask?.id || "unknown";
-        logger.error("Worker timed out", { sandboxId: worker.id, taskId });
+        const taskId = worker.currentTask.id;
+        logger.error("Worker timed out", { workerId: worker.id, taskId });
         for (const cb of this.onTimeoutCallbacks) {
           cb(worker.id, taskId);
         }
@@ -115,20 +91,8 @@ export class Monitor {
     }
   }
 
-  isWorkerStuck(worker: Worker): boolean {
-    if (worker.sandboxStatus.status !== "working") return false;
-    const elapsed = (Date.now() - worker.lastHealthCheck) / 1000;
-    return elapsed > this.config.stuckWorkerThreshold;
-  }
-
-  getStuckWorkers(): Worker[] {
-    return this.workerPool.getAllWorkers().filter((w) => this.isWorkerStuck(w));
-  }
-
   isWorkerTimedOut(worker: Worker): boolean {
-    if (worker.sandboxStatus.status !== "working") return false;
-    if (!worker.currentTask?.startedAt) return false;
-    const elapsed = (Date.now() - worker.currentTask.startedAt) / 1000;
+    const elapsed = (Date.now() - worker.startedAt) / 1000;
     return elapsed > this.config.workerTimeout;
   }
 
@@ -167,27 +131,19 @@ export class Monitor {
     }
   }
 
-  recordEmptyDiff(sandboxId: string, taskId: string): void {
-    logger.warn("Empty diff detected", { sandboxId, taskId });
+  recordEmptyDiff(workerId: string, taskId: string): void {
+    logger.warn("Empty diff detected", { workerId, taskId });
     for (const cb of this.onEmptyDiffCallbacks) {
-      cb(sandboxId, taskId);
+      cb(workerId, taskId);
     }
   }
 
-  onWorkerStuck(callback: (sandboxId: string, lastProgress: string) => void): void {
-    this.onStuckCallbacks.push(callback);
-  }
-
-  onWorkerTimeout(callback: (sandboxId: string, taskId: string) => void): void {
+  onWorkerTimeout(callback: (workerId: string, taskId: string) => void): void {
     this.onTimeoutCallbacks.push(callback);
   }
 
-  onEmptyDiff(callback: (sandboxId: string, taskId: string) => void): void {
+  onEmptyDiff(callback: (workerId: string, taskId: string) => void): void {
     this.onEmptyDiffCallbacks.push(callback);
-  }
-
-  onWorkerUnhealthy(callback: (sandboxId: string) => void): void {
-    this.onUnhealthyCallbacks.push(callback);
   }
 
   onMetricsUpdate(callback: (snapshot: MetricsSnapshot) => void): void {

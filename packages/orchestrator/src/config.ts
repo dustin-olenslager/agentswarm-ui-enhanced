@@ -4,7 +4,6 @@ export interface OrchestratorConfig extends HarnessConfig {
   targetRepoPath: string;
   pythonPath: string;
   healthCheckInterval: number;
-  stuckWorkerThreshold: number;
 }
 
 const ALLOWED_MERGE_STRATEGIES = ["fast-forward", "rebase", "merge-commit"] as const;
@@ -17,6 +16,11 @@ export function loadConfig(): OrchestratorConfig {
     throw new Error("Missing required env: RUNPOD_ENDPOINT_ID");
   }
   const llmEndpoint = `https://api.runpod.ai/v2/${runpodEndpointId}/openai`;
+
+  const runpodApiKey = process.env.RUNPOD_API_KEY;
+  if (!runpodApiKey) {
+    throw new Error("Missing required env: RUNPOD_API_KEY");
+  }
 
   const gitRepoUrl = process.env.GIT_REPO_URL;
   if (!gitRepoUrl) {
@@ -39,7 +43,7 @@ export function loadConfig(): OrchestratorConfig {
       model: process.env.LLM_MODEL || "glm-5",
       maxTokens: Number(process.env.LLM_MAX_TOKENS) || 8192,
       temperature: Number(process.env.LLM_TEMPERATURE) || 0.7,
-      apiKey: process.env.RUNPOD_API_KEY,
+      apiKey: runpodApiKey,
     },
     git: {
       repoUrl: gitRepoUrl,
@@ -55,7 +59,6 @@ export function loadConfig(): OrchestratorConfig {
     targetRepoPath: process.env.TARGET_REPO_PATH || "./target-repo",
     pythonPath: process.env.PYTHON_PATH || "python3",
     healthCheckInterval: Number(process.env.HEALTH_CHECK_INTERVAL) || 10,
-    stuckWorkerThreshold: Number(process.env.STUCK_WORKER_THRESHOLD) || 300,
   };
 
   return config;

@@ -10,7 +10,7 @@ import type { WorkerPool } from "./worker-pool.js";
 import type { MergeQueue } from "./merge-queue.js";
 import type { Monitor } from "./monitor.js";
 import { LLMClient, type LLMMessage } from "./llm-client.js";
-import { type RepoState, type RawTaskInput, readRepoState, parseLLMTaskArray } from "./shared.js";
+import { type RepoState, type RawTaskInput, readRepoState, parseLLMTaskArray, ConcurrencyLimiter } from "./shared.js";
 
 const logger = createLogger("planner", "root-planner");
 
@@ -35,7 +35,7 @@ export class Planner {
 
   private running: boolean;
   private taskCounter: number;
-  private dispatchLock: Promise<void> = Promise.resolve();
+  private dispatchLimiter: ConcurrencyLimiter;
 
   private taskCreatedCallbacks: ((task: Task) => void)[];
   private taskCompletedCallbacks: ((task: Task, handoff: Handoff) => void)[];
@@ -62,6 +62,7 @@ export class Planner {
 
     this.running = false;
     this.taskCounter = 0;
+    this.dispatchLimiter = new ConcurrencyLimiter(config.maxWorkers);
 
     this.llmClient = new LLMClient({
       endpoint: config.llm.endpoint,
@@ -223,23 +224,7 @@ export class Planner {
 
     for (const task of tasks) {
       const promise = (async () => {
-        let releaseLock: () => void;
-        const waitForLock = this.dispatchLock;
-        this.dispatchLock = new Promise((resolve) => { releaseLock = resolve; });
-        await waitForLock;
-
-        const deadline = Date.now() + this.config.workerTimeout * 1000;
-        while (this.workerPool.getAvailableWorkers().length === 0) {
-          if (Date.now() > deadline) {
-            releaseLock!();
-            throw new Error(`Timed out waiting for available worker for task ${task.id}`);
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          if (!this.running) {
-            releaseLock!();
-            throw new Error("Planner stopped");
-          }
-        }
+        await this.dispatchLimiter.acquire();
 
         try {
           await createBranch(task.branch, this.targetRepoPath);
@@ -247,10 +232,8 @@ export class Planner {
           // Branch may already exist
         }
 
-        const availableWorker = this.workerPool.getAvailableWorkers()[0];
-        this.taskQueue.assignTask(task.id, availableWorker.id);
+        this.taskQueue.assignTask(task.id, `ephemeral-${task.id}`);
         this.taskQueue.startTask(task.id);
-        releaseLock!();
 
         try {
           const handoff = await this.workerPool.assignTask(task);
@@ -280,6 +263,8 @@ export class Planner {
           this.taskQueue.failTask(task.id);
           const err = error instanceof Error ? error : new Error(String(error));
           throw err;
+        } finally {
+          this.dispatchLimiter.release();
         }
       })();
 

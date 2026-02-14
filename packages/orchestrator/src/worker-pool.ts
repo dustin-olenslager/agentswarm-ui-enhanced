@@ -1,14 +1,16 @@
+/**
+ * Worker Pool — Ephemeral sandbox model
+ *
+ * Each task gets its own short-lived Modal sandbox:
+ *   create → write task.json → exec worker-runner.js → read result.json → terminate
+ *
+ * There is no persistent pool. `start()` and `stop()` are no-ops.
+ * `assignTask()` spawns a Python subprocess that handles the full sandbox lifecycle.
+ */
+
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type {
-  Task,
-  Handoff,
-  SandboxStatus,
-  HarnessConfig,
-  TaskAssignment,
-  TaskResult,
-  HealthResponse,
-} from "@agentswarm/core";
+import type { Task, Handoff, HarnessConfig } from "@agentswarm/core";
 import { createLogger } from "@agentswarm/core";
 
 const execFileAsync = promisify(execFile);
@@ -17,14 +19,12 @@ const logger = createLogger("worker-pool", "root-planner");
 
 export interface Worker {
   id: string;
-  sandboxStatus: SandboxStatus;
-  currentTask?: Task;
-  createdAt: number;
-  lastHealthCheck: number;
+  currentTask: Task;
+  startedAt: number;
 }
 
 export class WorkerPool {
-  private workers: Map<string, Worker>;
+  private activeWorkers: Map<string, Worker>;
   private workerPrompt: string;
   private config: {
     maxWorkers: number;
@@ -34,8 +34,7 @@ export class WorkerPool {
     pythonPath: string;
   };
   private taskCompleteCallbacks: ((handoff: Handoff) => void)[];
-  private workerReadyCallbacks: ((sandboxId: string) => void)[];
-  private workerFailedCallbacks: ((sandboxId: string, error: Error) => void)[];
+  private workerFailedCallbacks: ((taskId: string, error: Error) => void)[];
 
   constructor(
     config: {
@@ -47,258 +46,117 @@ export class WorkerPool {
     },
     workerPrompt: string,
   ) {
-    this.workers = new Map();
+    this.activeWorkers = new Map();
     this.workerPrompt = workerPrompt;
     this.config = config;
     this.taskCompleteCallbacks = [];
-    this.workerReadyCallbacks = [];
     this.workerFailedCallbacks = [];
   }
 
+  /**
+   * No-op — ephemeral model has no persistent sandboxes to start.
+   */
   async start(): Promise<void> {
-    logger.info("Starting worker pool", { maxWorkers: this.config.maxWorkers });
-    const spawnPromises: Promise<string>[] = [];
-    for (let i = 0; i < this.config.maxWorkers; i++) {
-      spawnPromises.push(this.spawnWorker());
-    }
-    const results = await Promise.allSettled(spawnPromises);
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    logger.info("Worker pool started", { succeeded, failed: results.length - succeeded });
+    logger.info("Worker pool ready (ephemeral mode)", { maxWorkers: this.config.maxWorkers });
   }
 
+  /**
+   * No-op — ephemeral sandboxes self-terminate after each task.
+   */
   async stop(): Promise<void> {
-    logger.info("Stopping worker pool", { workerCount: this.workers.size });
-    const terminatePromises = [...this.workers.keys()].map((id) =>
-      this.terminateWorker(id),
-    );
-    await Promise.allSettled(terminatePromises);
-    logger.info("Worker pool stopped");
+    logger.info("Worker pool stopped", { activeCount: this.activeWorkers.size });
   }
 
   async assignTask(task: Task): Promise<Handoff> {
-    const available = this.getAvailableWorkers();
-    if (available.length === 0) {
-      throw new Error("No available workers");
-    }
+    const worker: Worker = {
+      id: `ephemeral-${task.id}`,
+      currentTask: task,
+      startedAt: Date.now(),
+    };
+    this.activeWorkers.set(worker.id, worker);
 
-    const worker = available[0];
-    worker.sandboxStatus.status = "working";
-    worker.sandboxStatus.taskId = task.id;
-    worker.currentTask = task;
+    logger.info("Dispatching task to ephemeral sandbox", { taskId: task.id });
 
-    logger.info("Assigning task to worker", { taskId: task.id, workerId: worker.id });
-
-    const assignment: TaskAssignment = {
-      type: "task_assignment",
+    const payload = JSON.stringify({
       task,
       systemPrompt: this.workerPrompt,
-      repoSnapshot: this.config.git.repoUrl,
+      repoUrl: this.config.git.repoUrl,
       llmConfig: this.config.llm,
-    };
+    });
 
     try {
-      const response = await fetch(`${worker.sandboxStatus.url}/task`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(assignment),
-      });
+      const { stdout, stderr } = await execFileAsync(
+        this.config.pythonPath,
+        ["infra/spawn_sandbox.py", payload],
+        {
+          cwd: process.cwd(),
+          timeout: this.config.workerTimeout * 1000,
+          maxBuffer: 10 * 1024 * 1024, // 10MB — sandbox can produce verbose logs
+        },
+      );
 
-      if (!response.ok) {
+      if (stderr) {
+        logger.warn("Sandbox stderr output", { taskId: task.id, stderr: stderr.slice(0, 500) });
+      }
+
+      // The last line of stdout is the JSON handoff result.
+      // Previous lines are streamed worker logs.
+      const lines = stdout.trim().split("\n");
+      const lastLine = lines[lines.length - 1];
+
+      let handoff: Handoff;
+      try {
+        handoff = JSON.parse(lastLine);
+      } catch {
         throw new Error(
-          `Sandbox ${worker.id} returned ${response.status}: ${await response.text()}`,
+          `Failed to parse sandbox output as Handoff JSON: ${lastLine.slice(0, 200)}`
         );
       }
 
-      const result = (await response.json()) as TaskResult;
-
-      worker.sandboxStatus.status = "ready";
-      worker.sandboxStatus.taskId = undefined;
-      worker.currentTask = undefined;
-
       for (const cb of this.taskCompleteCallbacks) {
-        cb(result.handoff);
+        cb(handoff);
       }
 
-      logger.info("Task completed", {
-        taskId: task.id,
-        workerId: worker.id,
-        status: result.handoff.status,
-      });
+      logger.info("Task completed", { taskId: task.id, status: handoff.status });
 
-      return result.handoff;
+      return handoff;
     } catch (error) {
-      worker.sandboxStatus.status = "error";
-      worker.sandboxStatus.taskId = undefined;
-      worker.currentTask = undefined;
-
       const err = error instanceof Error ? error : new Error(String(error));
-      logger.error("Task assignment failed", { taskId: task.id, workerId: worker.id, error: err.message });
+      logger.error("Ephemeral sandbox failed", { taskId: task.id, error: err.message });
+
+      for (const cb of this.workerFailedCallbacks) {
+        cb(task.id, err);
+      }
+
       throw err;
+    } finally {
+      this.activeWorkers.delete(worker.id);
     }
   }
 
-  async spawnWorker(): Promise<string> {
-    const pythonScript = `
-import asyncio, json
-from infra.spawn_sandbox import SandboxManager
-
-async def main():
-    mgr = SandboxManager()
-    info = await mgr.create_sandbox()
-    print(json.dumps({"sandboxId": info.sandbox_id, "url": info.url}))
-
-asyncio.run(main())
-`;
-
-    logger.info("Spawning new worker via Python");
-
-    const { stdout } = await execFileAsync(
-      this.config.pythonPath,
-      ["-c", pythonScript],
-      { cwd: process.cwd() },
-    );
-
-    let parsed: { sandboxId: string; url: string };
-    try {
-      parsed = JSON.parse(stdout.trim());
-    } catch {
-      throw new Error(`Failed to parse spawn_sandbox output: ${stdout.trim().slice(0, 200)}`);
-    }
-    const sandboxId = parsed.sandboxId;
-    const url = parsed.url;
-
-    const worker: Worker = {
-      id: sandboxId,
-      sandboxStatus: {
-        sandboxId,
-        status: "ready",
-        healthCheck: { lastPing: Date.now(), consecutiveFailures: 0 },
-        url,
-      },
-      createdAt: Date.now(),
-      lastHealthCheck: Date.now(),
-    };
-
-    this.workers.set(sandboxId, worker);
-
-    logger.info("Worker spawned", { sandboxId, url });
-
-    for (const cb of this.workerReadyCallbacks) {
-      cb(sandboxId);
-    }
-
-    return sandboxId;
-  }
-
-  async terminateWorker(sandboxId: string): Promise<void> {
-    const pythonScript = `
-import asyncio
-from infra.spawn_sandbox import SandboxManager
-
-async def main():
-    mgr = SandboxManager()
-    await mgr.terminate_sandbox("${sandboxId}")
-
-asyncio.run(main())
-`;
-
-    logger.info("Terminating worker", { sandboxId });
-
-    try {
-      await execFileAsync(this.config.pythonPath, ["-c", pythonScript], {
-        cwd: process.cwd(),
-      });
-    } catch (error) {
-      logger.warn("Error during worker termination", {
-        sandboxId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    const worker = this.workers.get(sandboxId);
-    if (worker) {
-      worker.sandboxStatus.status = "terminated";
-    }
-    this.workers.delete(sandboxId);
-
-    logger.info("Worker terminated", { sandboxId });
-  }
-
-  async recycleWorker(sandboxId: string): Promise<string> {
-    logger.info("Recycling worker", { sandboxId });
-    await this.terminateWorker(sandboxId);
-    return this.spawnWorker();
-  }
-
-  getWorker(sandboxId: string): Worker | undefined {
-    return this.workers.get(sandboxId);
+  getAvailableWorkers(): { id: string }[] {
+    const available = this.config.maxWorkers - this.activeWorkers.size;
+    if (available <= 0) return [];
+    return Array.from({ length: available }, (_, i) => ({ id: `slot-${i}` }));
   }
 
   getAllWorkers(): Worker[] {
-    return Array.from(this.workers.values());
-  }
-
-  getAvailableWorkers(): Worker[] {
-    return Array.from(this.workers.values()).filter(
-      (w) => w.sandboxStatus.status === "ready",
-    );
+    return Array.from(this.activeWorkers.values());
   }
 
   getWorkerCount(): number {
-    return this.workers.size;
+    return this.activeWorkers.size;
   }
 
   getActiveTaskCount(): number {
-    return Array.from(this.workers.values()).filter(
-      (w) => w.sandboxStatus.status === "working",
-    ).length;
-  }
-
-  async checkWorkerHealth(sandboxId: string): Promise<HealthResponse | null> {
-    const worker = this.workers.get(sandboxId);
-    if (!worker?.sandboxStatus.url) {
-      return null;
-    }
-
-    try {
-      const response = await fetch(`${worker.sandboxStatus.url}/health`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      const health = (await response.json()) as HealthResponse;
-      worker.lastHealthCheck = Date.now();
-      worker.sandboxStatus.healthCheck.lastPing = Date.now();
-      worker.sandboxStatus.healthCheck.consecutiveFailures = 0;
-      return health;
-    } catch (error) {
-      worker.sandboxStatus.healthCheck.consecutiveFailures += 1;
-
-      if (worker.sandboxStatus.healthCheck.consecutiveFailures >= 3) {
-        worker.sandboxStatus.status = "error";
-        const err = new Error(
-          `Worker ${sandboxId} unhealthy after 3 consecutive failures`,
-        );
-        for (const cb of this.workerFailedCallbacks) {
-          cb(sandboxId, err);
-        }
-        logger.error("Worker health check failed", {
-          sandboxId,
-          consecutiveFailures: worker.sandboxStatus.healthCheck.consecutiveFailures,
-        });
-      }
-
-      return null;
-    }
+    return this.activeWorkers.size;
   }
 
   onTaskComplete(callback: (handoff: Handoff) => void): void {
     this.taskCompleteCallbacks.push(callback);
   }
 
-  onWorkerReady(callback: (sandboxId: string) => void): void {
-    this.workerReadyCallbacks.push(callback);
-  }
-
-  onWorkerFailed(callback: (sandboxId: string, error: Error) => void): void {
+  onWorkerFailed(callback: (taskId: string, error: Error) => void): void {
     this.workerFailedCallbacks.push(callback);
   }
 }

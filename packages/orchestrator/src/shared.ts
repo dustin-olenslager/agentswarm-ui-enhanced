@@ -36,6 +36,46 @@ export async function readRepoState(targetRepoPath: string): Promise<RepoState> 
   return { fileTree, recentCommits, featuresJson };
 }
 
+/**
+ * Counting semaphore for bounding concurrent async operations.
+ * Replaces the old serial dispatchLock mutex.
+ */
+export class ConcurrencyLimiter {
+  private active = 0;
+  private waitQueue: (() => void)[] = [];
+
+  constructor(private readonly maxConcurrent: number) {
+    if (maxConcurrent < 1) throw new Error("maxConcurrent must be >= 1");
+  }
+
+  async acquire(): Promise<void> {
+    if (this.active < this.maxConcurrent) {
+      this.active++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.waitQueue.push(() => {
+        this.active++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.waitQueue.shift();
+    if (next) next();
+  }
+
+  getActive(): number {
+    return this.active;
+  }
+
+  getQueueLength(): number {
+    return this.waitQueue.length;
+  }
+}
+
 export function parseLLMTaskArray(content: string): RawTaskInput[] {
   let cleaned = content.trim();
 

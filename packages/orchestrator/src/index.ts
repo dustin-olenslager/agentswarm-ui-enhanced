@@ -7,3 +7,4 @@ export * from "./llm-client.js";
 export * from "./shared.js";
 export * from "./planner.js";
 export * from "./subplanner.js";
+export * from "./reconciler.js";
