@@ -12,7 +12,8 @@
     }
   },
   "dependencies": {
-    "@agentswarm/core": "workspace:*"
+    "@agentswarm/core": "workspace:*",
+    "@mariozechner/pi-coding-agent": "^0.52.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
