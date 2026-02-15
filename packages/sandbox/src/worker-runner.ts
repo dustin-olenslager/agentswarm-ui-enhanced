@@ -5,6 +5,9 @@ import {
   AuthStorage,
   createAgentSession,
   codingTools,
+  grepTool,
+  findTool,
+  lsTool,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -13,6 +16,24 @@ import {
 const TASK_PATH = "/workspace/task.json";
 const RESULT_PATH = "/workspace/result.json";
 const WORK_DIR = "/workspace/repo";
+
+/**
+ * Parent directory of the repo. Pi walks up from cwd to discover AGENTS.md,
+ * so writing our worker instructions here keeps them separate from any
+ * AGENTS.md that already exists in the target repo (both get loaded).
+ */
+const WORKER_AGENTS_MD_PATH = "/workspace/AGENTS.md";
+
+/**
+ * All 7 built-in Pi tools — gives workers full filesystem and search
+ * capabilities instead of the limited 4-tool codingTools set.
+ *
+ * codingTools = [read, bash, edit, write]
+ * + grep (ripgrep-powered content search)
+ * + find  (glob-based file search)
+ * + ls    (directory listing)
+ */
+const fullPiTools = [...codingTools, grepTool, findTool, lsTool];
 
 interface TaskPayload {
   task: Task;
@@ -44,19 +65,8 @@ function writeResult(handoff: Handoff): void {
   log(`Result written to ${RESULT_PATH}`);
 }
 
-export function buildTaskPrompt(task: Task, systemPrompt?: string): string {
-  const parts: string[] = [];
-
-  if (systemPrompt) {
-    parts.push(
-      "<system_instructions>",
-      systemPrompt,
-      "</system_instructions>",
-      "",
-    );
-  }
-
-  parts.push(
+export function buildTaskPrompt(task: Task): string {
+  const parts: string[] = [
     `## Task: ${task.id}`,
     `**Description:** ${task.description}`,
     `**Scope (files to focus on):** ${task.scope.join(", ")}`,
@@ -64,7 +74,7 @@ export function buildTaskPrompt(task: Task, systemPrompt?: string): string {
     `**Branch:** ${task.branch}`,
     "",
     "Complete this task. Commit your changes when done. Stay focused on the scoped files.",
-  );
+  ];
 
   return parts.join("\n");
 }
@@ -78,11 +88,19 @@ export async function runWorker(): Promise<void> {
   const { task, systemPrompt, llmConfig } = payload;
   log(`Task: ${task.id} — ${task.description.slice(0, 80)}`);
 
+  // Write worker instructions as AGENTS.md in /workspace/ (parent of repo cwd).
+  // Pi auto-discovers AGENTS.md by walking up from cwd, so both this file and
+  // any AGENTS.md in the target repo itself get loaded and concatenated.
+  if (systemPrompt) {
+    writeFileSync(WORKER_AGENTS_MD_PATH, systemPrompt, "utf-8");
+    log("Worker instructions written to /workspace/AGENTS.md");
+  }
+
   const authStorage = new AuthStorage();
   const modelRegistry = new ModelRegistry(authStorage);
   modelRegistry.registerProvider("glm5", {
     baseUrl: llmConfig.endpoint,
-    apiKey: llmConfig.apiKey || "no-key-needed", // Pi SDK requires a non-empty string
+    apiKey: llmConfig.apiKey || "no-key-needed",
     api: "openai-completions",
     models: [{
       id: llmConfig.model,
@@ -106,11 +124,11 @@ export async function runWorker(): Promise<void> {
   log(`Model registered: ${llmConfig.model} via ${llmConfig.endpoint}`);
 
   const startSha = safeExec("git rev-parse HEAD", WORK_DIR);
-  log("Creating agent session...");
+  log("Creating agent session (full Pi capabilities)...");
   const { session } = await createAgentSession({
     cwd: WORK_DIR,
     model,
-    tools: codingTools,
+    tools: fullPiTools,
     authStorage,
     modelRegistry,
     sessionManager: SessionManager.inMemory(),
@@ -154,7 +172,7 @@ export async function runWorker(): Promise<void> {
     }
   });
 
-  const prompt = buildTaskPrompt(task, systemPrompt);
+  const prompt = buildTaskPrompt(task);
   log("Running agent prompt...");
   await session.prompt(prompt);
   log("Agent prompt completed.");
@@ -163,6 +181,21 @@ export async function runWorker(): Promise<void> {
   const tokensUsed = stats.tokens.total;
 
   session.dispose();
+
+  // Safety-net: commit any uncommitted changes the agent left behind.
+  // The agent is instructed to commit, but if it didn't (LLM flakiness,
+  // confused output, etc.), we catch the changes here so they aren't lost
+  // when the ephemeral sandbox terminates.
+  log("Safety-net: staging any uncommitted changes...");
+  safeExec("git add -A", WORK_DIR);
+  const stagedFiles = safeExec("git diff --cached --name-only", WORK_DIR);
+  if (stagedFiles) {
+    safeExec(
+      `git commit -m "feat(${task.id}): auto-commit uncommitted changes"`,
+      WORK_DIR,
+    );
+    log(`Safety-net commit created (${stagedFiles.split("\n").length} files).`);
+  }
 
   log("Extracting git diff stats...");
   const diff = safeExec(`git diff ${startSha} --no-color`, WORK_DIR);
