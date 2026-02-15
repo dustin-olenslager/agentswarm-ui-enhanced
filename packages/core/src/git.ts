@@ -9,6 +9,8 @@ export interface MergeResult {
   success: boolean;
   conflicted?: boolean;
   message: string;
+  /** Files involved in a conflict. Populated before merge/rebase is aborted. */
+  conflictingFiles?: string[];
 }
 
 export interface RebaseResult {
@@ -33,6 +35,40 @@ export interface CommitInfo {
 // Helper to get working directory with default
 function getCwd(cwd?: string): string {
   return cwd ?? process.cwd();
+}
+
+/**
+ * Parse `git status --porcelain` to extract files with conflict markers.
+ * Must be called WHILE a merge/rebase conflict is active (before abort).
+ * Status codes indicating conflicts: UU, AA, DD, AU, UA, DU, UD.
+ */
+async function getConflictingFilesFromStatus(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd });
+    const lines = stdout.trim().split("\n").filter((line) => line.length > 0);
+    const conflicts: string[] = [];
+
+    for (const line of lines) {
+      const status = line.substring(0, 2);
+      const filePath = line.substring(3).trim();
+
+      if (
+        status === "UU" ||
+        status === "AA" ||
+        status === "DD" ||
+        status === "AU" ||
+        status === "UA" ||
+        status === "DU" ||
+        status === "UD"
+      ) {
+        conflicts.push(filePath);
+      }
+    }
+
+    return conflicts;
+  } catch {
+    return [];
+  }
 }
 
 // 1. Create a new branch
@@ -107,15 +143,14 @@ export async function mergeBranch(
             };
           }
           // Check for conflicts
-          const statusResult = await execFileAsync("git", ["status", "--porcelain"], {
-            cwd: workDir,
-          });
-          if (statusResult.stdout.includes("UU") || statusResult.stdout.includes("AA")) {
+          const conflictingFiles = await getConflictingFilesFromStatus(workDir);
+          if (conflictingFiles.length > 0) {
             await execFileAsync("git", ["merge", "--abort"], { cwd: workDir });
             return {
               success: false,
               conflicted: true,
-              message: "Merge conflict occurred",
+              conflictingFiles,
+              message: `Merge conflict in ${conflictingFiles.length} file(s): ${conflictingFiles.join(", ")}`,
             };
           }
           throw error;
@@ -152,15 +187,16 @@ export async function mergeBranch(
           };
         } catch (error) {
           const errMsg = error instanceof Error ? error.message : String(error);
-          // Check for rebase conflicts
           if (errMsg.includes("could not apply") || errMsg.includes("CONFLICT")) {
+            const conflictingFiles = await getConflictingFilesFromStatus(workDir);
             try { await execFileAsync("git", ["rebase", "--abort"], { cwd: workDir }); } catch { /* ignore */ }
             try { await execFileAsync("git", ["checkout", currentBranch], { cwd: workDir }); } catch { /* ignore */ }
             try { await execFileAsync("git", ["branch", "-D", tmpBranch], { cwd: workDir }); } catch { /* ignore */ }
             return {
               success: false,
               conflicted: true,
-              message: "Rebase conflict occurred",
+              conflictingFiles,
+              message: `Rebase conflict in ${conflictingFiles.length} file(s): ${conflictingFiles.join(", ")}`,
             };
           }
           // Non-conflict failure — abort any in-progress rebase before cleanup
@@ -184,15 +220,14 @@ export async function mergeBranch(
         } catch (error) {
           const errMsg = error instanceof Error ? error.message : String(error);
           // Check for merge conflicts
-          const statusResult = await execFileAsync("git", ["status", "--porcelain"], {
-            cwd: workDir,
-          });
-          if (statusResult.stdout.includes("UU") || statusResult.stdout.includes("AA")) {
+          const conflictingFiles = await getConflictingFilesFromStatus(workDir);
+          if (conflictingFiles.length > 0) {
             await execFileAsync("git", ["merge", "--abort"], { cwd: workDir });
             return {
               success: false,
               conflicted: true,
-              message: "Merge conflict occurred",
+              conflictingFiles,
+              message: `Merge conflict in ${conflictingFiles.length} file(s): ${conflictingFiles.join(", ")}`,
             };
           }
           return {
@@ -249,40 +284,7 @@ export async function rebaseBranch(branchName: string, onto: string, cwd?: strin
   }
 }
 
-// 5. Get list of conflicted files
-export async function getConflicts(cwd?: string): Promise<string[]> {
-  const workDir = getCwd(cwd);
-  try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd: workDir });
-    const lines = stdout.trim().split("\n").filter((line) => line.length > 0);
-    const conflicts: string[] = [];
-
-    for (const line of lines) {
-      // Conflict markers: UU (both modified), AA (both added), DD (both deleted), AU, UA, DU, UD
-      const status = line.substring(0, 2);
-      const filePath = line.substring(3).trim();
-
-      if (
-        status === "UU" ||
-        status === "AA" ||
-        status === "DD" ||
-        status === "AU" ||
-        status === "UA" ||
-        status === "DU" ||
-        status === "UD"
-      ) {
-        conflicts.push(filePath);
-      }
-    }
-
-    return conflicts;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to get conflicts: ${message}`);
-  }
-}
-
-// 6. Get current branch name
+// 5. Get current branch name
 export async function getCurrentBranch(cwd?: string): Promise<string> {
   const workDir = getCwd(cwd);
   try {

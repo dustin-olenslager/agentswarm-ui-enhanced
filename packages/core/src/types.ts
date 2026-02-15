@@ -18,6 +18,8 @@ export interface Task {
   startedAt?: number;
   completedAt?: number;
   priority: number;              // 1 (highest) to 10 (lowest)
+  conflictSourceBranch?: string; // Original branch that conflicted (for conflict-fix tasks)
+  retryCount?: number;           // How many times this task has been retried (0 = first attempt)
 }
 
 // Handoff report from worker back to planner
@@ -38,6 +40,8 @@ export interface Handoff {
     toolCallCount: number;
     durationMs: number;
   };
+  /** tsc --noEmit exit code from post-agent build check. null = check did not run. */
+  buildExitCode?: number | null;
 }
 
 // Worker sandbox status
@@ -110,4 +114,10 @@ export interface MetricsSnapshot {
   totalCostUsd: number;
   activeToolCalls: number;
   estimatedInFlightTokens: number;
+
+  // Finalization phase metrics (populated only after finalization runs)
+  finalizationAttempts?: number;
+  finalizationBuildPassed?: boolean;
+  finalizationTestsPassed?: boolean;
+  finalizationDurationMs?: number;
 }
