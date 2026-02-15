@@ -3,15 +3,18 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger, getRecentCommits, getFileTree } from "@agentswarm/core";
+import { spawn } from "node:child_process";
 import {
   AuthStorage,
   createAgentSession,
+  createBashTool,
   createReadOnlyTools,
   ModelRegistry,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import type { LLMConfig } from "./config.js";
 
 const logger = createLogger("shared", "root-planner");
@@ -49,7 +52,7 @@ export async function readRepoState(targetRepoPath: string): Promise<RepoState> 
     ];
   }
 
-  const commits = await getRecentCommits(15, cwd);
+  const commits = await getRecentCommits(40, cwd);
   const recentCommits = commits.map((c) => `${c.hash.slice(0, 8)} ${c.message} (${c.author})`);
 
   let featuresJson: string | null = null;
@@ -158,6 +161,179 @@ export function slugifyForBranch(description: string): string {
     .replace(/-+$/, "");           // trim trailing hyphen after truncation
 }
 
+const GIT_READONLY_SUBCOMMANDS = new Set([
+  "log",
+  "diff",
+  "show",
+  "status",
+  "branch",
+  "rev-parse",
+  "shortlog",
+  "blame",
+  "tag",
+  "ls-files",
+  "ls-tree",
+  "cat-file",
+  "name-rev",
+  "describe",
+]);
+
+function isReadOnlyGitCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed.startsWith("git ") && trimmed !== "git") return false;
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return false;
+  return GIT_READONLY_SUBCOMMANDS.has(parts[1]);
+}
+
+/**
+ * Bash tool restricted to read-only git commands via allowlist-based validation.
+ * Security: non-git and mutating git commands are rejected before reaching the shell.
+ */
+export function createGitReadOnlyBashTool(cwd: string): ReturnType<typeof createBashTool> {
+  const operations: BashOperations = {
+    exec: async (command, execCwd, options) => {
+      if (!isReadOnlyGitCommand(command)) {
+        const msg = `[blocked] Only read-only git commands are allowed. Allowed subcommands: ${[...GIT_READONLY_SUBCOMMANDS].join(", ")}. Got: "${command.slice(0, 120)}"`;
+        options.onData(Buffer.from(msg + "\n"));
+        return { exitCode: 1 };
+      }
+
+      return new Promise<{ exitCode: number | null }>((resolve) => {
+        const proc = spawn("bash", ["-c", command], {
+          cwd: execCwd,
+          env: options.env,
+          signal: options.signal,
+        });
+        proc.stdout.on("data", (data: Buffer) => options.onData(data));
+        proc.stderr.on("data", (data: Buffer) => options.onData(data));
+        proc.on("close", (code) => resolve({ exitCode: code }));
+        proc.on("error", (err: Error) => {
+          options.onData(Buffer.from(`Error: ${err.message}\n`));
+          resolve({ exitCode: 1 });
+        });
+        if (options.timeout) {
+          setTimeout(() => {
+            proc.kill("SIGKILL");
+            resolve({ exitCode: 1 });
+          }, options.timeout);
+        }
+      });
+    },
+  };
+
+  return createBashTool(cwd, { operations });
+}
+
+export interface PlannerResponseResult {
+  scratchpad: string;
+  tasks: RawTaskInput[];
+}
+
+function salvageTruncatedResponse(content: string): PlannerResponseResult {
+  let scratchpad = "";
+  const tasks: RawTaskInput[] = [];
+
+  const scratchpadMatch = content.match(/"scratchpad"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (scratchpadMatch) {
+    try {
+      scratchpad = JSON.parse(`"${scratchpadMatch[1]}"`);
+    } catch {
+      scratchpad = scratchpadMatch[1];
+    }
+  }
+
+  const tasksKeyMatch = content.match(/"tasks"\s*:\s*\[/);
+  if (!tasksKeyMatch || tasksKeyMatch.index === undefined) {
+    return { scratchpad, tasks };
+  }
+
+  const tasksArrayStart = tasksKeyMatch.index + tasksKeyMatch[0].length;
+  const remainder = content.slice(tasksArrayStart);
+
+  let depth = 0;
+  let objStart = -1;
+
+  for (let i = 0; i < remainder.length; i++) {
+    const ch = remainder[i];
+
+    if (ch === '"') {
+      i++;
+      while (i < remainder.length) {
+        if (remainder[i] === '\\') {
+          i++;
+        } else if (remainder[i] === '"') {
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        const objStr = remainder.slice(objStart, i + 1);
+        try {
+          const task = JSON.parse(objStr) as RawTaskInput;
+          if (task.description) {
+            tasks.push(task);
+          }
+        } catch {
+          // skip malformed
+        }
+        objStart = -1;
+      }
+    }
+  }
+
+  return { scratchpad, tasks };
+}
+
+export function parsePlannerResponse(content: string): PlannerResponseResult {
+  try {
+    let cleaned = content.trim();
+    const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+    if (fenceMatch) {
+      cleaned = fenceMatch[1].trim();
+    }
+
+    const objStart = cleaned.indexOf("{");
+    const objEnd = cleaned.lastIndexOf("}");
+    if (objStart !== -1 && objEnd > objStart) {
+      const candidate = cleaned.slice(objStart, objEnd + 1);
+      const parsed = JSON.parse(candidate);
+
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.tasks)) {
+        return {
+          scratchpad: typeof parsed.scratchpad === "string" ? parsed.scratchpad : "",
+          tasks: parsed.tasks,
+        };
+      }
+    }
+  } catch {
+    const salvaged = salvageTruncatedResponse(content);
+    if (salvaged.tasks.length > 0) {
+      logger.warn("Salvaged tasks from truncated LLM response", {
+        tasksRecovered: salvaged.tasks.length,
+        contentLength: content.length,
+      });
+      return salvaged;
+    }
+  }
+
+  try {
+    const tasks = parseLLMTaskArray(content);
+    return { scratchpad: "", tasks };
+  } catch {
+    logger.warn("Failed to parse planner response", { contentPreview: content.slice(0, 300) });
+    return { scratchpad: "", tasks: [] };
+  }
+}
+
 export function parseLLMTaskArray(content: string): RawTaskInput[] {
   let cleaned = content.trim();
 
@@ -256,7 +432,7 @@ export async function createPlannerPiSession(options: PiSessionOptions): Promise
   const { session } = await createAgentSession({
     cwd: tempDir,
     model,
-    tools: createReadOnlyTools(targetRepoPath),
+    tools: [...createReadOnlyTools(targetRepoPath), createGitReadOnlyBashTool(targetRepoPath)],
     authStorage,
     modelRegistry,
     sessionManager: SessionManager.inMemory(),
