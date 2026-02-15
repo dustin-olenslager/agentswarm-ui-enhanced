@@ -14,3 +14,8 @@ target-repo/
 state/
 .pi
 logs/
+gource-bin/
+gource.zip
+demo.gource
+.gource-*.log
+gource-bin
