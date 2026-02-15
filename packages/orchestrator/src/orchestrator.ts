@@ -2,8 +2,10 @@
  * Orchestrator Factory — creates and wires all components.
  */
 
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import type { Task, Handoff, MetricsSnapshot } from "@agentswarm/core";
 import { createLogger, createTracer, type Tracer } from "@agentswarm/core";
 import { loadConfig, type OrchestratorConfig } from "./config.js";
@@ -13,9 +15,10 @@ import { MergeQueue } from "./merge-queue.js";
 import { GitMutex, slugifyForBranch } from "./shared.js";
 import { Monitor } from "./monitor.js";
 import { Planner } from "./planner.js";
-import { Reconciler } from "./reconciler.js";
+import { Reconciler, type SweepResult } from "./reconciler.js";
 import { Subplanner, DEFAULT_SUBPLANNER_CONFIG } from "./subplanner.js";
 
+const execFileAsync = promisify(execFile);
 const logger = createLogger("orchestrator", "root-planner");
 
 // ---------------------------------------------------------------------------
@@ -27,12 +30,15 @@ export interface OrchestratorCallbacks {
   onTaskCompleted?: (task: Task, handoff: Handoff) => void;
   onIterationComplete?: (iteration: number, tasks: Task[], handoffs: Handoff[]) => void;
   onError?: (error: Error) => void;
-  onSweepComplete?: (tasks: Task[]) => void;
+  onSweepComplete?: (result: import("./reconciler.js").SweepResult) => void;
   onReconcilerError?: (error: Error) => void;
   onWorkerTimeout?: (workerId: string, taskId: string) => void;
   onEmptyDiff?: (workerId: string, taskId: string) => void;
   onMetricsUpdate?: (snapshot: MetricsSnapshot) => void;
   onTaskStatusChange?: (task: Task, oldStatus: string, newStatus: string) => void;
+  onFinalizationStart?: () => void;
+  onFinalizationAttempt?: (attempt: number, sweepResult: SweepResult) => void;
+  onFinalizationComplete?: (attempts: number, passed: boolean) => void;
 }
 
 export interface Orchestrator {
@@ -88,6 +94,12 @@ export interface CreateOrchestratorOptions {
   /** Max fix tasks per reconciler sweep. Default: 5. */
   reconcilerMaxFixTasks?: number;
 
+  /** Max finalization sweep attempts. Default: 3. */
+  finalizationMaxAttempts?: number;
+
+  /** Whether to run the finalization phase. Default: true. */
+  finalizationEnabled?: boolean;
+
   /** Callbacks wired to planner/monitor/reconciler events. */
   callbacks?: OrchestratorCallbacks;
 }
@@ -108,6 +120,12 @@ export async function createOrchestrator(
   }
   if (options.configOverrides?.targetRepoPath !== undefined) {
     config.targetRepoPath = options.configOverrides.targetRepoPath;
+  }
+  if (options.finalizationMaxAttempts !== undefined) {
+    config.finalization.maxAttempts = options.finalizationMaxAttempts;
+  }
+  if (options.finalizationEnabled !== undefined) {
+    config.finalization.enabled = options.finalizationEnabled;
   }
 
   logger.info("Config loaded", {
@@ -207,6 +225,7 @@ export async function createOrchestrator(
       maxFixTasks: options.reconcilerMaxFixTasks ?? 5,
     },
     taskQueue,
+    mergeQueue,
     monitor,
     reconcilerPrompt,
   );
@@ -253,9 +272,17 @@ export async function createOrchestrator(
       monitor.start();
       reconciler.start();
 
-      reconciler.onSweepComplete((tasks) => {
-        for (const task of tasks) {
+      reconciler.onSweepComplete((result) => {
+        planner.setLastSweepResult(result);
+        for (const task of result.fixTasks) {
           planner.injectTask(task);
+        }
+
+        const timedOut = workerPool.drainTimedOutBranches();
+        for (const branch of timedOut) {
+          execFileAsync("git", ["push", "origin", "--delete", branch], { cwd: config.targetRepoPath })
+            .then(() => logger.info("Cleaned up timed-out branch", { branch }))
+            .catch(() => { /* branch may already be gone */ });
         }
       });
 
@@ -286,11 +313,18 @@ export async function createOrchestrator(
       let conflictCounter = 0;
       const MAX_CONFLICT_FIX_TASKS = 10;
 
+      const deleteRemoteBranch = (branch: string): void => {
+        execFileAsync("git", ["push", "origin", "--delete", branch], { cwd: config.targetRepoPath })
+          .then(() => logger.info("Deleted abandoned remote branch", { branch }))
+          .catch(() => { /* branch may already be gone */ });
+      };
+
       mergeQueue.onConflict((info) => {
         if (info.branch.includes("conflict-fix")) {
           logger.warn("Skipping conflict-fix for conflict-fix branch (cascade prevention)", {
             branch: info.branch,
           });
+          deleteRemoteBranch(info.branch);
           return;
         }
 
@@ -299,6 +333,7 @@ export async function createOrchestrator(
             branch: info.branch,
             limit: MAX_CONFLICT_FIX_TASKS,
           });
+          deleteRemoteBranch(info.branch);
           return;
         }
 
@@ -307,14 +342,16 @@ export async function createOrchestrator(
         const fixTask: Task = {
           id: fixId,
           description: `Resolve merge conflict from branch "${info.branch}". Conflicting files: ${info.conflictingFiles.join(", ")}. ` +
-            `Open each file, find <<<<<<< / ======= / >>>>>>> blocks, resolve by keeping the correct version based on surrounding code context. ` +
-            `Remove all conflict markers. Ensure the file compiles after resolution.`,
+            `The sandbox will check out the original branch and rebase it onto main — conflict markers will be present in the working tree. ` +
+            `Open each conflicting file, find <<<<<<< / ======= / >>>>>>> blocks, resolve by keeping the correct version based on surrounding code context. ` +
+            `Remove all conflict markers and run \`git add\` on each resolved file, then \`git rebase --continue\`. Ensure the file compiles after resolution.`,
           scope: info.conflictingFiles.slice(0, 5),
-          acceptance: `No <<<<<<< markers remain in the affected files. tsc --noEmit returns 0 for these files.`,
-          branch: `${config.git.branchPrefix}${fixId}-${slugifyForBranch(`resolve merge conflict ${info.branch}`)}`,
+          acceptance: `No <<<<<<< markers remain in the affected files. tsc --noEmit returns 0 for these files. Rebase completes cleanly.`,
+          branch: info.branch,
           status: "pending",
           createdAt: Date.now(),
           priority: 1,
+          conflictSourceBranch: info.branch,
         };
 
         logger.info("Creating conflict-resolution task", {
@@ -348,11 +385,137 @@ export async function createOrchestrator(
       logger.info("Beginning planner loop", { request: request.slice(0, 200) });
       await planner.runLoop(request);
 
+      const mainSnapshot = monitor.getSnapshot();
+      logger.info("Planner loop complete", { ...mainSnapshot });
+
+      // ── Finalization Phase ────────────────────────────────────────
+      if (config.finalization.enabled) {
+        const finalizationStart = Date.now();
+        let attempt = 0;
+        let finalBuildOk = false;
+        let finalTestsOk = false;
+
+        logger.info("Entering finalization phase", {
+          maxAttempts: config.finalization.maxAttempts,
+        });
+
+        if (cb?.onFinalizationStart) cb.onFinalizationStart();
+
+        while (attempt < config.finalization.maxAttempts) {
+          attempt++;
+          logger.info(`Finalization attempt ${attempt}/${config.finalization.maxAttempts}`);
+
+          // Step 1: Drain the merge queue
+          const mergeQueueDepth = mergeQueue.getQueueLength();
+          if (mergeQueueDepth > 0) {
+            logger.info("Draining merge queue", { depth: mergeQueueDepth });
+            const mergeResults = await mergeQueue.processQueue();
+            for (const result of mergeResults) {
+              monitor.recordMergeAttempt(result.success);
+            }
+          }
+
+          // Step 2: Synchronous reconciler sweep
+          logger.info("Running finalization sweep (build + test + conflict check)");
+          let sweepResult: SweepResult;
+          try {
+            sweepResult = await reconciler.sweep();
+          } catch (sweepErr) {
+            const msg = sweepErr instanceof Error ? sweepErr.message : String(sweepErr);
+            logger.error("Finalization sweep threw an error", { attempt, error: msg });
+            break;
+          }
+
+          planner.setLastSweepResult(sweepResult);
+
+          if (cb?.onFinalizationAttempt) cb.onFinalizationAttempt(attempt, sweepResult);
+
+          finalBuildOk = sweepResult.buildOk;
+          finalTestsOk = sweepResult.testsOk;
+
+          // Step 3: All green?
+          if (sweepResult.buildOk && sweepResult.testsOk && !sweepResult.hasConflictMarkers) {
+            logger.info("Finalization sweep PASSED — all green!", { attempt });
+            break;
+          }
+
+          // Step 4: Not green
+          logger.info("Finalization sweep found issues", {
+            attempt,
+            buildOk: sweepResult.buildOk,
+            testsOk: sweepResult.testsOk,
+            hasConflictMarkers: sweepResult.hasConflictMarkers,
+            conflictFiles: sweepResult.conflictFiles.length,
+            fixTaskCount: sweepResult.fixTasks.length,
+          });
+
+          // Step 5: No fix tasks generated — cannot self-heal
+          if (sweepResult.fixTasks.length === 0) {
+            logger.warn("Sweep found failures but generated no fix tasks — cannot self-heal", {
+              buildOk: sweepResult.buildOk,
+              testsOk: sweepResult.testsOk,
+              hasConflictMarkers: sweepResult.hasConflictMarkers,
+            });
+            break;
+          }
+
+          // Don't inject tasks on last attempt — we can't verify them
+          if (attempt >= config.finalization.maxAttempts) {
+            logger.warn("Max finalization attempts reached — skipping fix task injection", {
+              attempt,
+              fixTasks: sweepResult.fixTasks.length,
+            });
+            break;
+          }
+
+          // Step 6: Inject fix tasks and wait for completion
+          for (const task of sweepResult.fixTasks) {
+            planner.injectTask(task);
+          }
+
+          logger.info("Waiting for finalization fix tasks to complete", {
+            count: sweepResult.fixTasks.length,
+          });
+          const fixWaitStart = Date.now();
+          const fixWaitTimeout = config.finalization.sweepTimeoutMs;
+          while (planner.getActiveTaskCount() > 0) {
+            if (Date.now() - fixWaitStart > fixWaitTimeout) {
+              logger.warn("Timed out waiting for finalization fix tasks", {
+                activeCount: planner.getActiveTaskCount(),
+                timeoutMs: fixWaitTimeout,
+              });
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+        }
+
+        const finalizationDuration = Date.now() - finalizationStart;
+        monitor.setFinalizationMetrics({
+          attempts: attempt,
+          buildPassed: finalBuildOk,
+          testsPassed: finalTestsOk,
+          durationMs: finalizationDuration,
+        });
+
+        const passed = finalBuildOk && finalTestsOk;
+        if (cb?.onFinalizationComplete) cb.onFinalizationComplete(attempt, passed);
+
+        logger.info("Finalization phase complete", {
+          attempts: attempt,
+          buildPassed: finalBuildOk,
+          testsPassed: finalTestsOk,
+          durationMs: finalizationDuration,
+          passed,
+        });
+      } else {
+        logger.info("Finalization phase disabled — skipping");
+      }
+
       const snapshot = monitor.getSnapshot();
-      logger.info("Planner loop complete", { ...snapshot });
+      logger.info("Orchestrator run complete", { ...snapshot });
 
       await instance.stop();
-
       return snapshot;
     },
 

@@ -95,11 +95,19 @@ async function main(): Promise<void> {
           failedTasks: snapshot.failedTasks,
         });
       },
-      onSweepComplete(tasks) {
-        if (tasks.length > 0) {
+      onSweepComplete(result) {
+        if (result.fixTasks.length > 0) {
           logger.info("Reconciler created fix tasks", {
-            count: tasks.length,
-            taskIds: tasks.map((t) => t.id),
+            count: result.fixTasks.length,
+            taskIds: result.fixTasks.map((t) => t.id),
+          });
+        }
+        if (!result.buildOk || !result.testsOk || result.hasConflictMarkers) {
+          logger.info("Reconciler sweep health", {
+            buildOk: result.buildOk,
+            testsOk: result.testsOk,
+            hasConflictMarkers: result.hasConflictMarkers,
+            conflictFiles: result.conflictFiles.length,
           });
         }
       },
@@ -136,6 +144,25 @@ async function main(): Promise<void> {
           from: oldStatus,
           to: newStatus,
           desc: task.description.slice(0, 200),
+        });
+      },
+      onFinalizationStart() {
+        logger.info("Finalization phase started");
+      },
+      onFinalizationAttempt(attempt, sweepResult) {
+        logger.info("Finalization attempt", {
+          attempt,
+          buildOk: sweepResult.buildOk,
+          testsOk: sweepResult.testsOk,
+          hasConflictMarkers: sweepResult.hasConflictMarkers,
+          conflictFiles: sweepResult.conflictFiles.length,
+          fixTasks: sweepResult.fixTasks.length,
+        });
+      },
+      onFinalizationComplete(attempts, passed) {
+        logger.info("Finalization phase complete", {
+          attempts,
+          passed,
         });
       },
     },
