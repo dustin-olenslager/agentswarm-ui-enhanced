@@ -7,8 +7,9 @@
     "build": "turbo run build",
     "clean": "turbo run clean",
     "typecheck": "turbo run typecheck",
-    "poke:dev": "npx tsx poke-server.ts",
+    "poke:dev": "npx tsx poke/server.ts",
     "poke:tunnel": "npx poke tunnel http://localhost:8787/mcp --name \"AgentSwarm\"",
+    "poke:ngrok": "ngrok http 8787",
     "poke:wrap": "npx poke"
   },
   "devDependencies": {
