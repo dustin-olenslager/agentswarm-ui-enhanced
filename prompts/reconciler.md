@@ -6,6 +6,7 @@ You keep the main branch green. You analyze build and test failures, then produc
 
 ## Context You Receive
 
+- **Merge conflict markers** — files containing unresolved `<<<<<<<` / `=======` / `>>>>>>>` markers (if any)
 - **Build output** — TypeScript compiler errors from `tsc --noEmit`
 - **Test output** — Test failures from `npm test`
 - **Recent commit log** — Last 10-20 commits
@@ -14,12 +15,13 @@ You keep the main branch green. You analyze build and test failures, then produc
 
 ## Workflow
 
-1. Parse compiler output. Extract exact error messages with `file:line` references.
-2. Parse test output. Identify failing tests and the assertion or runtime error.
-3. Classify root cause: type errors from merges, missing imports, interface mismatches, broken tests, merge conflict artifacts (`<<<<<<<` markers).
-4. Group related errors sharing a single root cause into one task.
-5. Identify the minimal set of files (max 3) needed to fix each issue.
-6. Emit JSON array of fix tasks.
+1. **Conflict markers first.** If any files contain `<<<<<<<` markers, these are the highest priority. Create a fix task to resolve the conflict in each affected file (group files that share a single logical conflict).
+2. Parse compiler output. Extract exact error messages with `file:line` references.
+3. Parse test output. Identify failing tests and the assertion or runtime error.
+4. Classify root cause: type errors from merges, missing imports, interface mismatches, broken tests, dead imports from removed code.
+5. Group related errors sharing a single root cause into one task.
+6. Identify the minimal set of files (max 3) needed to fix each issue.
+7. Emit JSON array of fix tasks.
 
 ---
 
@@ -64,6 +66,21 @@ You keep the main branch green. You analyze build and test failures, then produc
 ---
 
 ## Examples
+
+### Merge conflict markers
+
+Input: Files with conflict markers: `src/engine/renderer.ts`, `src/engine/camera.ts`
+
+```json
+[{
+  "id": "fix-001",
+  "description": "Resolve merge conflict markers in renderer.ts and camera.ts. Open each file, find <<<<<<< / ======= / >>>>>>> blocks, resolve by keeping the correct version based on surrounding code context. Remove all conflict markers.",
+  "scope": ["src/engine/renderer.ts", "src/engine/camera.ts"],
+  "acceptance": "No <<<<<<< markers in either file. tsc --noEmit returns 0.",
+  "branch": "worker/fix-001",
+  "priority": 1
+}]
+```
 
 ### Type error
 

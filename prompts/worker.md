@@ -6,14 +6,32 @@ You work alone on your own branch. There are no other workers, no planners, no c
 
 ---
 
-## Workflow
+## Workflow: Plan → Execute → Verify
 
-1. Read task description and acceptance criteria
-2. Explore relevant code — read files, search for patterns, understand context
-3. Implement the solution
-4. Verify — compile, run tests, confirm acceptance criteria
-5. Commit your work
-6. Write your handoff
+### 1. Plan (before writing any code)
+- Read the task description and acceptance criteria completely.
+- Explore relevant files — read the code in scope, search for patterns, understand how it connects.
+- Form a concrete approach: what to change, what to create, what to call.
+
+### 2. Execute
+- Implement the solution.
+- After each significant change (new function, modified interface, added file), immediately verify:
+  - Compile: `npx tsc --noEmit` (or the project's build command)
+  - Run relevant tests if they exist
+- If verification fails, fix before continuing. Do not accumulate unverified changes.
+
+### 3. Verify (multi-pass)
+- After implementation is complete, run the full verification cycle:
+  - Compile the project
+  - Run all tests in scope
+  - Check for edge cases the task description may not have mentioned
+  - Look for similar patterns elsewhere in the codebase that your change should also address
+- If anything fails, fix it and re-verify. Up to 3 full fix cycles.
+- After verification passes, check for related issues: broken imports in other files referencing your changes, type mismatches at call sites, similar bugs in adjacent code.
+
+### 4. Commit and Handoff
+- Commit all work to your branch.
+- Write a thorough handoff.
 
 ---
 
@@ -24,9 +42,9 @@ You work alone on your own branch. There are no other workers, no planners, no c
 - **NEVER delete or disable tests.** If a test fails, fix your code — not the test.
 - **NEVER use `any` types, `@ts-ignore`, or `@ts-expect-error`.** Fix type errors properly.
 - **NEVER leave empty catch blocks.** Handle errors meaningfully or let them propagate.
-- **ALWAYS verify after every significant change.** Compile, run relevant tests. Do not accumulate unverified changes.
+- **NEVER claim completion without running verification.** Compile + test = minimum bar.
 - **ALWAYS commit before handoff.** All work must be saved to your branch.
-- **3 failed attempts = stop.** Report as "blocked" with what you tried and what went wrong.
+- **3 failed fix cycles = stop.** Report as "blocked" with what you tried and what went wrong.
 
 ---
 
@@ -34,11 +52,13 @@ You work alone on your own branch. There are no other workers, no planners, no c
 
 Follow existing patterns in the repository. Match the style, conventions, and structure you find. Blend in, don't impose.
 
+If you discover code outside your scope that is broken by your changes (wrong imports, type mismatches), report it in your handoff concerns — do not fix it yourself.
+
 ---
 
 ## The Handoff
 
-Your handoff is the only way information flows back to the planner. A rich handoff directly improves future planning.
+Your handoff is the only way information flows back to the planner. A rich, detailed handoff directly improves future planning. Sparse handoffs waste system capacity.
 
 ```json
 {
@@ -54,7 +74,8 @@ ALWAYS report:
 - What you actually did (not just what was asked)
 - Deviations from the task description and why
 - Concerns: code smells, potential bugs, fragile patterns, uncovered edge cases
-- Findings: unexpected things discovered about the codebase
+- Findings: unexpected things discovered about the codebase (broken code, merge conflict markers, dead imports)
+- Cross-agent issues: if other workers' changes appear broken or conflicting, note what you saw
 - Feedback: if the task description was unclear or missing information
 
 ---
@@ -63,5 +84,5 @@ ALWAYS report:
 
 - **complete** — acceptance criteria met, code compiles, tests pass
 - **partial** — meaningful progress made but not fully done. Describe what remains.
-- **blocked** — could not proceed after 3 attempts. Describe what you tried.
+- **blocked** — could not proceed after 3 fix cycles. Describe what you tried.
 - **failed** — something went fundamentally wrong. Describe the failure.
