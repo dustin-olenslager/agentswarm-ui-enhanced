@@ -383,4 +383,73 @@ describe("TaskQueue", () => {
     assert.strictEqual(taskQueue.getTotalCount(), 5, "Total should still be 5");
     assert.strictEqual(taskQueue.getRunningCount(), 0, "Running should be 0");
   });
+
+  describe("retryTask", () => {
+    it("retries a failed task — resets to pending and re-enqueues", () => {
+      const taskQueue = new TaskQueue();
+      const task = makeTask({ id: "retry-1" });
+
+      taskQueue.enqueue(task);
+      taskQueue.assignTask("retry-1", "sandbox-1");
+      taskQueue.startTask("retry-1");
+      taskQueue.failTask("retry-1");
+
+      const result = taskQueue.retryTask("retry-1");
+      assert.strictEqual(result, true, "retryTask should return true for failed task");
+
+      const retried = taskQueue.getById("retry-1");
+      assert.strictEqual(retried?.status, "pending", "Status should be pending after retry");
+      assert.strictEqual(retried?.retryCount, 1, "retryCount should be 1");
+      assert.strictEqual(retried?.assignedTo, undefined, "assignedTo should be cleared");
+      assert.strictEqual(retried?.startedAt, undefined, "startedAt should be cleared");
+      assert.strictEqual(retried?.completedAt, undefined, "completedAt should be cleared");
+    });
+
+    it("returns false for non-failed tasks", () => {
+      const taskQueue = new TaskQueue();
+      const task = makeTask({ id: "retry-2" });
+
+      taskQueue.enqueue(task);
+      assert.strictEqual(taskQueue.retryTask("retry-2"), false, "retryTask should return false for pending task");
+    });
+
+    it("returns false for non-existent tasks", () => {
+      const taskQueue = new TaskQueue();
+      assert.strictEqual(taskQueue.retryTask("nonexistent"), false, "retryTask should return false for missing task");
+    });
+
+    it("increments retryCount on successive retries", () => {
+      const taskQueue = new TaskQueue();
+      const task = makeTask({ id: "retry-3" });
+
+      taskQueue.enqueue(task);
+      taskQueue.assignTask("retry-3", "s1");
+      taskQueue.startTask("retry-3");
+      taskQueue.failTask("retry-3");
+      taskQueue.retryTask("retry-3");
+      assert.strictEqual(taskQueue.getById("retry-3")?.retryCount, 1, "retryCount should be 1 after first retry");
+
+      taskQueue.assignTask("retry-3", "s2");
+      taskQueue.startTask("retry-3");
+      taskQueue.failTask("retry-3");
+      taskQueue.retryTask("retry-3");
+      assert.strictEqual(taskQueue.getById("retry-3")?.retryCount, 2, "retryCount should be 2 after second retry");
+    });
+
+    it("fires status change callback on retry", () => {
+      const taskQueue = new TaskQueue();
+      const changes: string[] = [];
+      taskQueue.onStatusChange((_task, old, next) => changes.push(`${old}->${next}`));
+
+      const task = makeTask({ id: "retry-4" });
+      taskQueue.enqueue(task);
+      taskQueue.assignTask("retry-4", "s1");
+      taskQueue.startTask("retry-4");
+      taskQueue.failTask("retry-4");
+      changes.length = 0;
+
+      taskQueue.retryTask("retry-4");
+      assert.deepStrictEqual(changes, ["failed->pending"], "Should fire failed->pending callback");
+    });
+  });
 });

@@ -8,7 +8,7 @@ export const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   assigned: ["running", "cancelled"],
   running: ["complete", "failed", "cancelled"],
   complete: [],
-  failed: [],
+  failed: ["pending"],
   cancelled: [],
 };
 
@@ -287,6 +287,25 @@ export class TaskQueue {
 
     task.completedAt = Date.now();
     this.updateStatus(taskId, "failed");
+  }
+
+  /**
+   * Retry a failed task — resets to pending and re-enqueues.
+   * Increments retryCount on the task. Returns false if task is not in failed state.
+   */
+  retryTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    if (task.status !== "failed") return false;
+
+    task.retryCount = (task.retryCount ?? 0) + 1;
+    task.assignedTo = undefined;
+    task.startedAt = undefined;
+    task.completedAt = undefined;
+
+    this.updateStatus(taskId, "pending");
+    this.pendingQueue.enqueue(task);
+    return true;
   }
 
   /**
