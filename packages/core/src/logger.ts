@@ -1,4 +1,68 @@
+import { mkdirSync, createWriteStream, type WriteStream } from "node:fs";
+import { resolve } from "node:path";
 import { LogEntry, AgentRole } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// LogWriter — singleton that tees NDJSON lines to a file in logs/
+// ---------------------------------------------------------------------------
+
+class LogWriter {
+  private stream: WriteStream | null = null;
+  private filePath: string | null = null;
+
+  /**
+   * Enable file logging. Creates `<projectRoot>/logs/run-<ISO>.ndjson`.
+   * Safe to call multiple times — subsequent calls are no-ops.
+   */
+  enable(projectRoot: string): string {
+    if (this.stream) return this.filePath!;
+
+    const logsDir = resolve(projectRoot, "logs");
+    mkdirSync(logsDir, { recursive: true });
+
+    const ts = new Date()
+      .toISOString()
+      .replace(/:/g, "-")
+      .replace(/\.\d+Z$/, "");
+    this.filePath = resolve(logsDir, `run-${ts}.ndjson`);
+    this.stream = createWriteStream(this.filePath, { flags: "a" });
+
+    return this.filePath;
+  }
+
+  write(line: string): void {
+    if (this.stream) {
+      this.stream.write(line + "\n");
+    }
+  }
+
+  close(): void {
+    if (this.stream) {
+      this.stream.end();
+      this.stream = null;
+    }
+  }
+}
+
+const logWriter = new LogWriter();
+
+/**
+ * Enable file logging for all Logger instances.
+ * Call once at startup from main.ts.
+ * Returns the absolute path to the log file.
+ */
+export function enableFileLogging(projectRoot: string): string {
+  return logWriter.enable(projectRoot);
+}
+
+/** Close the log file. Call on graceful shutdown. */
+export function closeFileLogging(): void {
+  logWriter.close();
+}
+
+// ---------------------------------------------------------------------------
+// Logger
+// ---------------------------------------------------------------------------
 
 export class Logger {
   constructor(
@@ -37,7 +101,9 @@ export class Logger {
       message,
       data,
     };
-    process.stdout.write(JSON.stringify(entry) + "\n");
+    const line = JSON.stringify(entry);
+    process.stdout.write(line + "\n");
+    logWriter.write(line);
   }
 }
 
