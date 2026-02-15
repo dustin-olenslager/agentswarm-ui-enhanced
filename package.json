@@ -6,7 +6,10 @@
   "scripts": {
     "build": "turbo run build",
     "clean": "turbo run clean",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "stagehand:record": "node scripts/stagehand-record.mjs",
+    "stagehand:record:hook": "node scripts/stagehand-record.mjs --trigger=post-merge",
+    "stagehand:hooks:install": "bash scripts/install-stagehand-hooks.sh"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -16,6 +19,7 @@
   "packageManager": "pnpm@9.0.0",
   "dependencies": {
     "@agentswarm/core": "workspace:*",
+    "@browserbasehq/stagehand": "^3.0.8",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "zod": "^4.3.6"
   }

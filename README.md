@@ -38,3 +38,35 @@ AgentSwarm is a **concurrent orchestrator** that manages a fleet of ephemeral co
 - **Intelligent Conflict Resolution**: Spawning "Mediator" agents to manually resolve complex Git merge conflicts.
 - **Hierarchical Management**: Introducing "Manager" agents that can break down features dynamically, rather than relying on a static initial plan.
 - **Web Dashboard**: Porting our terminal UI to a React-based web app for remote monitoring.
+
+## Stagehand Merge Recording
+
+You can run Stagehand recording manually or automatically after merges.
+
+1. Set environment variables:
+   - `MODEL_API_KEY` (or `OPENAI_API_KEY`)
+   - `BROWSERBASE_API_KEY`
+   - `BROWSERBASE_PROJECT_ID`
+   - Optional: `STAGEHAND_RECORD_URL` (default `http://127.0.0.1:5173`)
+   - Optional: `STAGEHAND_ENV=LOCAL` to run against a local browser instead of Browserbase
+   - Note: In `BROWSERBASE` mode, `STAGEHAND_RECORD_URL` must be publicly reachable (not `localhost`).
+   - Optional (LOCAL mode): `STAGEHAND_LOCAL_BROWSER_PATH` to force a browser executable path.
+   - Optional (LOCAL mode, macOS): `STAGEHAND_LOCAL_BROWSER=arc` or `STAGEHAND_LOCAL_BROWSER=brave`.
+2. Run a manual recording:
+   - `pnpm stagehand:record`
+3. Install git hooks to run recording after merges/rebases:
+   - `pnpm stagehand:hooks:install`
+   - Optional: set `STAGEHAND_POST_MERGE_ENABLED=0` to disable auto-run temporarily
+
+Outputs are written to `stagehand-runs/run-*/` with:
+- `metadata.json` (session URLs and run details)
+- `final.png` (end-of-run screenshot)
+
+### Local Browser Examples (macOS)
+
+- Arc:
+  - `export STAGEHAND_ENV=LOCAL`
+  - `export STAGEHAND_LOCAL_BROWSER_PATH="/Applications/Arc.app/Contents/MacOS/Arc"`
+- Brave:
+  - `export STAGEHAND_ENV=LOCAL`
+  - `export STAGEHAND_LOCAL_BROWSER_PATH="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"`

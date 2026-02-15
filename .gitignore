@@ -14,8 +14,11 @@ target-repo/
 state/
 .pi
 logs/
+stagehand-runs/
 gource-bin/
 gource.zip
-demo.gource
+# demo.gource
 .gource-*.log
 gource-bin
+
+agent-swarm-visualizer
