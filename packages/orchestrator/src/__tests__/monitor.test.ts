@@ -5,12 +5,13 @@ import type { MonitorConfig } from "../monitor.js";
 import type { WorkerPool, Worker } from "../worker-pool.js";
 import type { TaskQueue } from "../task-queue.js";
 
-function createMockWorkerPool(workers: Worker[] = []): WorkerPool {
+function createMockWorkerPool(workers: Worker[] = [], totalActiveToolCalls = 0): WorkerPool {
   return {
     getAllWorkers: () => workers,
     getAvailableWorkers: () => [],
     getWorkerCount: () => workers.length,
     getActiveTaskCount: () => workers.length,
+    getTotalActiveToolCalls: () => totalActiveToolCalls,
   } as unknown as WorkerPool;
 }
 
@@ -98,6 +99,7 @@ describe("Monitor", () => {
 
       assert.strictEqual(snapshot.activeWorkers, 1);
       assert.strictEqual(snapshot.pendingTasks, 5);
+      assert.strictEqual(snapshot.runningTasks, 1);
       assert.strictEqual(snapshot.completedTasks, 10);
       assert.strictEqual(snapshot.failedTasks, 2);
       assert.ok(snapshot.timestamp > 0);
@@ -105,6 +107,20 @@ describe("Monitor", () => {
       assert.ok(snapshot.mergeSuccessRate >= 0);
       assert.strictEqual(snapshot.totalTokensUsed, 0);
       assert.strictEqual(snapshot.totalCostUsd, 0);
+      assert.strictEqual(snapshot.activeToolCalls, 0);
+      assert.strictEqual(snapshot.estimatedInFlightTokens, 0);
+    });
+
+    it("includes active tool calls and estimated in-flight tokens", () => {
+      config = createConfig();
+      const worker = makeWorker();
+      const pool = createMockWorkerPool([worker], 20);
+      const queue = createMockTaskQueue({ pending: 0, completed: 0, failed: 0, running: 1 });
+      monitor = new Monitor(config, pool, queue);
+
+      const snapshot = monitor.getSnapshot();
+      assert.strictEqual(snapshot.activeToolCalls, 20);
+      assert.strictEqual(snapshot.estimatedInFlightTokens, 60000);
     });
   });
 

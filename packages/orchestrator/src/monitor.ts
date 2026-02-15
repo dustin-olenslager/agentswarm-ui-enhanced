@@ -22,6 +22,7 @@ export class Monitor {
   private totalCostUsd: number;
   private mergeAttempts: number;
   private mergeSuccesses: number;
+  private suspiciousTaskCount: number;
   private startTime: number;
 
   private onTimeoutCallbacks: ((workerId: string, taskId: string) => void)[];
@@ -40,6 +41,7 @@ export class Monitor {
     this.totalCostUsd = 0;
     this.mergeAttempts = 0;
     this.mergeSuccesses = 0;
+    this.suspiciousTaskCount = 0;
     this.startTime = Date.now();
 
     this.onTimeoutCallbacks = [];
@@ -74,10 +76,18 @@ export class Monitor {
 
   poll(): void {
     const workers = this.workerPool.getAllWorkers();
+    logger.debug("Monitor poll", {
+      workerCount: workers.length,
+      pendingTasks: this.taskQueue.getPendingCount(),
+      runningTasks: this.taskQueue.getRunningCount(),
+      totalTokens: this.totalTokensUsed,
+    });
 
     for (const worker of workers) {
       if (this.isWorkerTimedOut(worker)) {
         const taskId = worker.currentTask.id;
+        const elapsedSec = Math.round((Date.now() - worker.startedAt) / 1000);
+        logger.debug("Worker timeout check failed", { workerId: worker.id, taskId, elapsedSec, timeoutSec: this.config.workerTimeout });
         logger.error("Worker timed out", { workerId: worker.id, taskId });
         for (const cb of this.onTimeoutCallbacks) {
           cb(worker.id, taskId);
@@ -103,17 +113,23 @@ export class Monitor {
   getSnapshot(): MetricsSnapshot {
     const elapsedHours = Math.max((Date.now() - this.startTime) / 3600000, 0.001);
     const completedCount = this.taskQueue.getCompletedCount();
+    const activeToolCalls = this.workerPool.getTotalActiveToolCalls();
+    const ESTIMATED_TOKENS_PER_TOOL_CALL = 3000;
 
     return {
       timestamp: Date.now(),
       activeWorkers: this.workerPool.getActiveTaskCount(),
       pendingTasks: this.taskQueue.getPendingCount(),
+      runningTasks: this.taskQueue.getRunningCount(),
       completedTasks: completedCount,
       failedTasks: this.taskQueue.getFailedCount(),
+      suspiciousTaskCount: this.suspiciousTaskCount,
       commitsPerHour: completedCount / elapsedHours,
       mergeSuccessRate: this.mergeAttempts > 0 ? this.mergeSuccesses / this.mergeAttempts : 0,
       totalTokensUsed: this.totalTokensUsed,
       totalCostUsd: this.totalCostUsd,
+      activeToolCalls,
+      estimatedInFlightTokens: activeToolCalls * ESTIMATED_TOKENS_PER_TOOL_CALL,
     };
   }
 
@@ -136,6 +152,11 @@ export class Monitor {
     for (const cb of this.onEmptyDiffCallbacks) {
       cb(workerId, taskId);
     }
+  }
+
+  recordSuspiciousTask(taskId: string, reason: string): void {
+    this.suspiciousTaskCount++;
+    logger.warn("Suspicious task detected", { taskId, reason, totalSuspicious: this.suspiciousTaskCount });
   }
 
   onWorkerTimeout(callback: (workerId: string, taskId: string) => void): void {
