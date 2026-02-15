@@ -22,6 +22,8 @@ Usage:
 import json
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -58,13 +60,14 @@ def run_task(payload: dict) -> dict:
     sb = None
 
     try:
+        t0 = time.time()
         sb = modal.Sandbox.create(
             app=app,
             image=image,
             timeout=2400,
             workdir="/workspace",
         )
-        print(f"[spawn] sandbox created for task {task_id}", flush=True)
+        print(f"[spawn] sandbox created for task {task_id} ({time.time() - t0:.1f}s)", flush=True)
 
         f = sb.open("/workspace/task.json", "w")
         f.write(json.dumps(payload))
@@ -83,25 +86,40 @@ def run_task(payload: dict) -> dict:
             authed_url = repo_url
 
         # Full clone (no --depth 1) so git diff against startSha works in worker-runner
+        t1 = time.time()
         clone = sb.exec(
             "git", "clone", authed_url, "/workspace/repo",
             timeout=120,
         )
         clone.wait()
+        print(f"[spawn] repo cloned for task {task_id} ({time.time() - t1:.1f}s)", flush=True)
 
         branch = task["branch"]
         branch_proc = sb.exec(
             "git", "-C", "/workspace/repo", "checkout", "-b", branch,
         )
         branch_proc.wait()
+        print(f"[spawn] branch created for task {task_id}: {branch}", flush=True)
 
+        print(f"[spawn] starting worker agent for task {task_id}", flush=True)
         process = sb.exec("node", "/agent/worker-runner.js", timeout=1800)
+
+        # Stream stdout and stderr concurrently so worker-runner log
+        # messages (written to stderr) are visible in real-time instead
+        # of being collected only after the process exits.
+        def _stream_stderr():
+            for line in process.stderr:
+                # Forward to stdout with [worker:ID] prefix so the
+                # orchestrator's forwardWorkerLine picks them up.
+                print(f"[worker:{task_id}] {line}", end="", flush=True)
+
+        stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
+        stderr_thread.start()
 
         for line in process.stdout:
             print(f"[worker:{task_id}] {line}", end="", flush=True)
-        for line in process.stderr:
-            print(f"[worker:{task_id}] {line}", end="", file=sys.stderr, flush=True)
 
+        stderr_thread.join(timeout=5)
         process.wait()
 
         # Push branch to remote so merge-queue can fetch it
