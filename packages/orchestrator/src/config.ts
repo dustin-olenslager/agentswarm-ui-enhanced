@@ -4,6 +4,8 @@ export interface OrchestratorConfig extends HarnessConfig {
   targetRepoPath: string;
   pythonPath: string;
   healthCheckInterval: number;
+  /** Max ms to wait for LLM endpoints to become ready at startup. 0 = skip probe. */
+  readinessTimeoutMs: number;
 }
 
 const ALLOWED_MERGE_STRATEGIES = ["fast-forward", "rebase", "merge-commit"] as const;
@@ -70,14 +72,15 @@ export function loadConfig(): OrchestratorConfig {
   }
 
   cachedConfig = {
-    maxWorkers: Number(process.env.MAX_WORKERS) || 100,
+    maxWorkers: Number(process.env.MAX_WORKERS) || 50,
     workerTimeout: Number(process.env.WORKER_TIMEOUT) || 1800,
     mergeStrategy: mergeStrategy as "fast-forward" | "rebase" | "merge-commit",
     llm: {
       endpoints,
       model: process.env.LLM_MODEL || "glm-5",
-      maxTokens: Number(process.env.LLM_MAX_TOKENS) || 8192,
+      maxTokens: Number(process.env.LLM_MAX_TOKENS) || 65536,
       temperature: Number(process.env.LLM_TEMPERATURE) || 0.7,
+      timeoutMs: process.env.LLM_TIMEOUT_MS ? Number(process.env.LLM_TIMEOUT_MS) : undefined,
     },
     git: {
       repoUrl: gitRepoUrl,
@@ -93,6 +96,9 @@ export function loadConfig(): OrchestratorConfig {
     targetRepoPath: process.env.TARGET_REPO_PATH || "./target-repo",
     pythonPath: process.env.PYTHON_PATH || "python3",
     healthCheckInterval: Number(process.env.HEALTH_CHECK_INTERVAL) || 10,
+    readinessTimeoutMs: process.env.LLM_READINESS_TIMEOUT_MS
+      ? Number(process.env.LLM_READINESS_TIMEOUT_MS)
+      : 120_000,
   };
 
   return cachedConfig;

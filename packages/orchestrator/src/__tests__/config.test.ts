@@ -38,11 +38,11 @@ describe("config", () => {
       const config = loadConfig();
 
       // Verify defaults
-      assert.strictEqual(config.maxWorkers, 100);
+      assert.strictEqual(config.maxWorkers, 50);
       assert.strictEqual(config.workerTimeout, 1800);
       assert.strictEqual(config.mergeStrategy, "fast-forward");
       assert.strictEqual(config.llm.model, "glm-5");
-      assert.strictEqual(config.llm.maxTokens, 8192);
+      assert.strictEqual(config.llm.maxTokens, 65536);
       assert.strictEqual(config.llm.temperature, 0.7);
       assert.strictEqual(config.git.mainBranch, "main");
       assert.strictEqual(config.git.branchPrefix, "worker/");
@@ -53,6 +53,7 @@ describe("config", () => {
       assert.strictEqual(config.targetRepoPath, "./target-repo");
       assert.strictEqual(config.pythonPath, "python3");
       assert.strictEqual(config.healthCheckInterval, 10);
+      assert.strictEqual(config.readinessTimeoutMs, 120_000);
     });
   });
 

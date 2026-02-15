@@ -12,7 +12,8 @@
     }
   },
   "dependencies": {
-    "@agentswarm/core": "workspace:*"
+    "@agentswarm/core": "workspace:*",
+    "dotenv": "^17.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
