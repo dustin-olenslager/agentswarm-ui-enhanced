@@ -71,8 +71,8 @@ def create_agent_image() -> modal.Image:
         )
         # Git configuration for agent commits
         .run_commands(
-            'git config --global user.name "AgentSwarm Worker"',
-            'git config --global user.email "worker@agentswarm.dev"',
+            'git config --global user.name "andrewcai8"',
+            'git config --global user.email "andrewca78@gmail.com"',
             'git config --global init.defaultBranch main',
         )
         # Set working directory
