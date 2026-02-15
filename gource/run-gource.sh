@@ -37,8 +37,8 @@ fi
 # ── Gource flags ─────────────────────────────────────────────────────────────
 ARGS=(
     --log-format custom
-    -1920x1080
-    --fullscreen
+    -1280x720
+    --windowed
     --title "AgentSwarm"
     --background-colour 0D0D12
     --font-colour 888888
