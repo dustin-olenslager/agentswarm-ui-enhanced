@@ -4,7 +4,7 @@ import type { HarnessConfig, Tracer, Span } from "@agentswarm/core";
 import {
   checkoutBranch,
   mergeBranch as coreMergeBranch,
-  getConflicts,
+  rebaseBranch,
   createLogger,
 } from "@agentswarm/core";
 import type { GitMutex } from "./shared.js";
@@ -48,8 +48,14 @@ async function abortMerge(cwd: string): Promise<void> {
 
 const logger = createLogger("merge-queue", "root-planner");
 
+interface MergeQueueEntry {
+  branch: string;
+  priority: number;
+  enqueuedAt: number;
+}
+
 export class MergeQueue {
-  private queue: string[];
+  private queue: MergeQueueEntry[];
   private merged: Set<string>;
   private stats: MergeStats;
   private mergeStrategy: MergeStrategy;
@@ -100,31 +106,37 @@ export class MergeQueue {
     this.tracer = tracer;
   }
 
-  enqueue(branch: string): void {
+  enqueue(branch: string, priority: number = 5): void {
     if (this.merged.has(branch)) {
       logger.debug(`Branch ${branch} already merged, skipping`);
       return;
     }
 
-    if (this.queue.includes(branch)) {
+    if (this.queue.some((e) => e.branch === branch)) {
       logger.debug(`Branch ${branch} already in queue, skipping`);
       return;
     }
 
-    this.queue.push(branch);
-    logger.debug(`Enqueued branch ${branch}`);
+    this.queue.push({ branch, priority, enqueuedAt: Date.now() });
+    this.queue.sort((a, b) => a.priority !== b.priority ? a.priority - b.priority : a.enqueuedAt - b.enqueuedAt);
+    logger.debug(`Enqueued branch ${branch}`, { priority });
   }
 
   dequeue(): string | undefined {
-    return this.queue.shift();
+    const entry = this.queue.shift();
+    return entry?.branch;
   }
 
   getQueue(): string[] {
-    return [...this.queue];
+    return this.queue.map((e) => e.branch);
   }
 
   getQueueLength(): number {
     return this.queue.length;
+  }
+
+  resetRetryCount(branch: string): void {
+    this.retryCount.delete(branch);
   }
 
   startBackground(intervalMs: number = 5_000): void {
@@ -255,6 +267,13 @@ export class MergeQueue {
             taskId,
             totalMerged: this.stats.totalMerged,
           });
+
+          try {
+            await execFileAsync("git", ["push", "origin", "--delete", branch], { cwd });
+            logger.debug(`Deleted remote branch ${branch}`, { branch, taskId });
+          } catch {
+            /* best effort */
+          }
         } catch (pushError) {
           const pushMsg = pushError instanceof Error ? pushError.message : String(pushError);
           logger.error(`Failed to push ${this.mainBranch} to origin after merging ${branch}`, {
@@ -276,21 +295,40 @@ export class MergeQueue {
       }
 
       if (result.conflicted) {
-        const conflicts = await getConflicts(cwd);
+        const conflicts = result.conflictingFiles ?? [];
         await abortMerge(cwd);
 
         this.stats.totalConflicts++;
 
         const retries = this.retryCount.get(branch) ?? 0;
         if (retries < this.maxConflictRetries) {
+          // Rebase branch onto latest main before re-queuing so the next
+          // merge attempt works against current HEAD rather than a stale base.
+          let rebased = false;
+          try {
+            const localBranch = `retry-rebase-${Date.now()}`;
+            await execFileAsync("git", ["checkout", "-b", localBranch, `origin/${branch}`], { cwd });
+            const rebaseResult = await rebaseBranch(localBranch, this.mainBranch, cwd);
+            if (rebaseResult.success) {
+              await execFileAsync("git", ["push", "origin", `${localBranch}:${branch}`, "--force"], { cwd });
+              rebased = true;
+              logger.info("Rebased branch onto latest main before retry", { branch, taskId });
+            }
+            await execFileAsync("git", ["checkout", this.mainBranch], { cwd });
+            try { await execFileAsync("git", ["branch", "-D", localBranch], { cwd }); } catch { /* best effort */ }
+          } catch {
+            try { await execFileAsync("git", ["checkout", this.mainBranch], { cwd }); } catch { /* best effort */ }
+          }
+
+          this.enqueue(branch, 1);
           this.retryCount.set(branch, retries + 1);
-          this.queue.push(branch);
           logger.info(`Re-queued conflicting branch for retry`, {
             branch,
             taskId,
             retry: retries + 1,
             maxRetries: this.maxConflictRetries,
             conflictingFiles: conflicts,
+            rebased,
           });
           span?.setAttributes({ status: "retry", retryCount: retries + 1 });
           span?.setStatus("ok", "conflict retry");
@@ -299,7 +337,7 @@ export class MergeQueue {
             success: false,
             status: "skipped",
             branch,
-            message: `Conflict retry ${retries + 1}/${this.maxConflictRetries} — re-queued`,
+            message: `Conflict retry ${retries + 1}/${this.maxConflictRetries} — re-queued${rebased ? " (rebased)" : ""}`,
           };
         }
 
