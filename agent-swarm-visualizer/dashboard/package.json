@@ -12,13 +12,16 @@
   },
   "dependencies": {
     "@agent-swarm-visualizer/shared": "workspace:*",
+    "bcryptjs": "^2.4.3",
     "d3-hierarchy": "^3.1.2",
+    "jose": "^5.2.0",
     "next": "15.1.4",
     "react": "19.0.0",
     "react-diff-viewer-continued": "^3.4.0",
     "react-dom": "19.0.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/d3-hierarchy": "^3.1.7",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
