@@ -1,0 +1,72 @@
+# AgentSwarm UI - Production Docker Image
+# Secure, hardened container for public deployment
+
+FROM node:18-alpine AS base
+WORKDIR /app
+
+# Install security updates
+RUN apk update && apk upgrade && apk add --no-cache \
+    dumb-init \
+    && rm -rf /var/cache/apk/*
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S agentswarm -u 1001
+
+# Stage 1: Dependencies
+FROM base AS deps
+COPY package.json pnpm-lock.yaml ./
+RUN npm install -g pnpm@9.0.0
+RUN pnpm install --frozen-lockfile
+
+# Stage 2: Build dashboard
+FROM base AS dashboard-builder
+COPY agent-swarm-visualizer/dashboard/package.json agent-swarm-visualizer/dashboard/pnpm-lock.yaml ./dashboard/
+COPY agent-swarm-visualizer/shared/package.json ./shared/
+COPY agent-swarm-visualizer/pnpm-workspace.yaml ./
+
+RUN npm install -g pnpm@9.0.0
+RUN cd dashboard && pnpm install --frozen-lockfile
+
+COPY agent-swarm-visualizer/shared ./shared/
+COPY agent-swarm-visualizer/dashboard ./dashboard/
+COPY agent-swarm-visualizer/tsconfig.base.json ./
+
+RUN cd dashboard && pnpm build
+
+# Stage 3: Production runtime
+FROM base AS production
+
+# Copy built application
+COPY --from=deps --chown=agentswarm:nodejs /app/node_modules ./node_modules
+COPY --from=dashboard-builder --chown=agentswarm:nodejs /app/dashboard/.next ./dashboard/.next
+COPY --from=dashboard-builder --chown=agentswarm:nodejs /app/dashboard/public ./dashboard/public
+COPY --from=dashboard-builder --chown=agentswarm:nodejs /app/shared/dist ./shared/dist
+
+# Copy application files
+COPY --chown=agentswarm:nodejs package.json ./
+COPY --chown=agentswarm:nodejs agent-swarm-visualizer/dashboard/package.json ./dashboard/
+COPY --chown=agentswarm:nodejs agent-swarm-visualizer/shared/package.json ./shared/
+COPY --chown=agentswarm:nodejs agent-swarm-visualizer/dashboard/next.config.ts ./dashboard/
+
+# Create data directory
+RUN mkdir -p /app/data && chown agentswarm:nodejs /app/data
+
+# Security: Remove package managers
+RUN npm uninstall -g pnpm
+
+# Switch to non-root user
+USER agentswarm
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Production start command
+CMD ["node_modules/.bin/next", "start", "-p", "3000", "--", "./dashboard"]

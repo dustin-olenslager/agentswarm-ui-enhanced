@@ -7,6 +7,7 @@ import {
   type AnyEventEnvelope,
   type TaskStatus
 } from "@agent-swarm-visualizer/shared";
+import { AuthHeader } from "@/components/auth-header";
 import { CommitPane } from "@/components/commit-pane";
 import { PlannerTreePane } from "@/components/planner-tree-pane";
 import { TimelinePane } from "@/components/timeline-pane";
@@ -301,14 +302,18 @@ export function AgentSwarmVisualizer() {
     <main className="shell">
       <header className="topbar">
         <div>
-          <h1>Agent Swarm Visualizer</h1>
-          <p className="muted">Event-sourced local dashboard with live + replay modes</p>
+          <h1>🐝 AgentSwarm UI</h1>
+          <p className="muted">Secure multi-agent coding dashboard</p>
         </div>
 
         <div className="status-card">
           <span className="mono">conn: {connectionStatus}</span>
           <span className="mono">events: {events.length}</span>
           <span className="mono">at: {showTimes ? new Date(currentAt).toLocaleTimeString() : "--:--:--"}</span>
+        </div>
+
+        <div className="auth-section">
+          <AuthHeader />
         </div>
       </header>
 

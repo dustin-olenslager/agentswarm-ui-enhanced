@@ -26,7 +26,10 @@ While other agent frameworks focus on the backend, **AgentSwarm UI puts visualiz
 
 ## 🚀 Quick Start
 
-### Terminal Dashboard (Instant)
+### 🚨 **PRODUCTION SECURITY NOTICE** 🚨
+**This fork includes production-ready authentication for public deployment. For demo/local use only:**
+
+### Terminal Dashboard (Local Development)
 
 ```bash
 # Clone and setup
@@ -42,18 +45,34 @@ export OPENAI_API_KEY="your-key-here"
 python main.py --dashboard "Build a simple web server"
 ```
 
-### Web Dashboard (Full Experience)
+### Web Dashboard (Secure Production)
+
+**🔐 For Production Deployment (swarm.metajibe.com):**
 
 ```bash
-# Install dependencies
-pnpm install
+# 1. Generate secure credentials
+node scripts/generate-credentials.js
 
-# Start the web dashboard
+# 2. Install dependencies
+pnpm install
+cd agent-swarm-visualizer/dashboard && pnpm install
+
+# 3. Deploy with authentication
+./scripts/deploy-production.sh
+
+# 4. Access at https://swarm.metajibe.com
+# Login: Use credentials from step 1
+```
+
+**🧪 For Local Development:**
+
+```bash
+# Start with demo credentials (admin/admin123, viewer/viewer123)
 cd agent-swarm-visualizer/dashboard
 pnpm dev
 
-# In another terminal, run your swarm
-python main.py "Build a React todo app"
+# Visit http://localhost:3000
+# ⚠️ Demo credentials only - change for production!
 ```
 
 ## 🎨 Dashboard Features
@@ -274,6 +293,45 @@ See [docs/deployment.md](docs/deployment.md) for detailed guides.
 - **Real-time Metrics** - Cost, success rate, throughput
 - **Error Tracking** - Automatic error detection and recovery
 - **Performance Analytics** - Historical data and trends
+
+## 🔐 Production Security
+
+**AgentSwarm UI is production-ready with enterprise security:**
+
+### Authentication & Authorization
+- **JWT-based authentication** with secure HTTP-only cookies
+- **Role-based access** (Admin/Viewer roles)
+- **Bcrypt password hashing** (12 rounds for production)
+- **Session management** with configurable timeouts
+
+### Security Hardening
+- **Rate limiting** - Login attempts and API requests
+- **Security headers** - CSP, HSTS, X-Frame-Options, etc.
+- **CORS protection** - Configured for production domains
+- **SQL injection prevention** - Prepared statements only
+
+### Production Deployment
+- **Docker containerization** with security best practices
+- **Nginx reverse proxy** with SSL termination
+- **Let's Encrypt integration** for automatic SSL certificates
+- **Health monitoring** and logging
+
+### Security Features
+```bash
+# Generate secure credentials
+node scripts/generate-credentials.js
+
+# Deploy with full security stack
+./scripts/deploy-production.sh
+
+# Monitor access logs
+docker-compose -f docker-compose.production.yml logs -f
+```
+
+**🚨 Live Demo:** [https://swarm.metajibe.com](https://swarm.metajibe.com)
+- Fully secured with authentication
+- Real-time agent swarm monitoring
+- Production-grade infrastructure
 
 ## 🤝 Community
 
