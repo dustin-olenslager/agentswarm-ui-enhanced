@@ -4,7 +4,7 @@ AgentSwarm Dashboard -- Rich Terminal UI
 =========================================
 Real-time monitoring for the massively parallel autonomous coding system.
 Reads NDJSON from the TypeScript orchestrator and renders a fullscreen
-multi-panel dashboard at 4 Hz.
+multi-panel dashboard at 2 Hz.
 
 Usage:
     python dashboard.py --demo                  # synthetic data (no orchestrator needed)
@@ -70,10 +70,6 @@ class PlannerTreeState:
         self.role: dict[str, str] = {self.ROOT_ID: "root-planner"}
         self._order: dict[str, int] = {self.ROOT_ID: 0}
         self._counter = 1
-        self.desc: dict[str, str] = {}
-        self.started_at: dict[str, float] = {}
-        self.worker_progress: dict[str, str] = {}
-        self.handoff_metrics: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def infer_parent_id(task_id: str) -> str | None:
@@ -85,12 +81,9 @@ class PlannerTreeState:
         node_id: str,
         parent_id: str | None = None,
         role: str | None = None,
-        desc: str = "",
     ):
         if not node_id:
             return
-        if desc:
-            self.desc[node_id] = desc
 
         if node_id == self.ROOT_ID:
             parent_id = None
@@ -131,14 +124,9 @@ class PlannerTreeState:
         status: str,
         parent_id: str | None = None,
         role: str | None = None,
-        desc: str = "",
     ):
-        self.ensure(node_id, parent_id, role, desc)
+        self.ensure(node_id, parent_id, role)
         self.status[node_id] = status
-        if status in ("running", "assigned") and node_id not in self.started_at:
-            self.started_at[node_id] = time.time()
-        elif status in ("complete", "failed", "cancelled"):
-            self.started_at.pop(node_id, None)
 
     def _depth_map(self) -> dict[str, int]:
         depth = {self.ROOT_ID: 0}
@@ -195,10 +183,6 @@ class PlannerTreeState:
                 "progress": progress.get(node_id, 0.0),
                 "children": kids,
                 "role": node_role,
-                "desc": self.desc.get(node_id, ""),
-                "started_at": self.started_at.get(node_id),
-                "worker_progress": self.worker_progress.get(node_id, ""),
-                "handoff_metrics": self.handoff_metrics.get(node_id),
             }
 
         max_depth = max(depth.values()) if depth else 0
@@ -223,7 +207,6 @@ class DashboardState:
         self.commits_per_hour = 0.0
         self.merge_success_rate = 0.0
         self.total_tokens = 0
-        self.estimated_in_flight = 0
 
         # Planner tree
         self.tree = PlannerTreeState()
@@ -248,31 +231,7 @@ class DashboardState:
         # Iteration counter
         self.iteration = 0
 
-        self.planner_thinking = False
-        self.planner_thinking_since = 0.0
-        self.completion_times: deque[float] = deque(maxlen=300)
-
-    def _derive_counts_from_tree(self):
-        """Derive task counts from tree state for real-time updates between Monitor polls."""
-        running = 0
-        pending = 0
-        completed = 0
-        failed = 0
-        for node_id, status in self.tree.status.items():
-            if node_id == PlannerTreeState.ROOT_ID:
-                continue
-            if status in ("running", "assigned"):
-                running += 1
-            elif status == "pending":
-                pending += 1
-            elif status == "complete":
-                completed += 1
-            elif status == "failed":
-                failed += 1
-        self.active_workers = running
-        self.pending_tasks = pending
-        self.completed_tasks = completed
-        self.failed_tasks = failed
+    # -- event router -------------------------------------------------------
 
     @staticmethod
     def _event_node_role(agent_role: str) -> str | None:
@@ -347,7 +306,6 @@ class DashboardState:
                 self.commits_per_hour = data.get("commitsPerHour", self.commits_per_hour)
                 self.merge_success_rate = data.get("mergeSuccessRate", self.merge_success_rate)
                 self.total_tokens = data.get("totalTokensUsed", self.total_tokens)
-                self.estimated_in_flight = data.get("estimatedInFlightTokens", 0)
 
             # -- Per-task lifecycle (from wired TaskQueue.onStatusChange) ----
             elif msg == "Task status":
@@ -355,7 +313,7 @@ class DashboardState:
                 new_st = data.get("to", "")
                 if task_id and new_st:
                     parent_id = data.get("parentId") or data.get("parentTaskId")
-                    self.tree.update_status(task_id, new_st, parent_id, node_role, desc=data.get("desc", ""))
+                    self.tree.update_status(task_id, new_st, parent_id, node_role)
 
             # -- Task created (from Planner callback) -----------------------
             elif msg == "Task created":
@@ -363,29 +321,17 @@ class DashboardState:
                 desc = data.get("desc", "")
                 if task_id:
                     parent_id = data.get("parentId") or data.get("parentTaskId")
-                    self.tree.update_status(task_id, "pending", parent_id, node_role, desc=desc)
-                self.planner_thinking = False
+                    self.tree.update_status(task_id, "pending", parent_id, node_role)
                 self._feed(ts_str, f"  + {task_id}  {desc[:52]}", "cyan")
 
             # -- Task completed ---------------------------------------------
             elif msg == "Task completed":
                 task_id = data.get("taskId", "")
                 status = data.get("status", "")
-                final = "complete" if status in ("complete", "partial") else "failed"
+                final = "complete" if status == "complete" else "failed"
                 if task_id:
                     parent_id = data.get("parentId") or data.get("parentTaskId")
                     self.tree.update_status(task_id, final, parent_id, node_role)
-                if task_id and data.get("linesAdded") is not None:
-                    self.tree.handoff_metrics[task_id] = {
-                        "linesAdded": data.get("linesAdded", 0),
-                        "linesRemoved": data.get("linesRemoved", 0),
-                        "filesChanged": data.get("filesChanged", 0),
-                        "tokensUsed": data.get("tokensUsed", 0),
-                        "durationMs": data.get("durationMs", 0),
-                        "summary": (data.get("summary") or "")[:80],
-                    }
-                if final == "complete":
-                    self.completion_times.append(time.time())
                 style = "green" if final == "complete" else "red"
                 self._feed(ts_str, f"  {task_id}  {status}", style)
 
@@ -398,8 +344,6 @@ class DashboardState:
 
             # -- Subplanner decomposition lifecycle -------------------------
             elif msg == "Calling LLM for task decomposition":
-                self.planner_thinking = True
-                self.planner_thinking_since = time.time()
                 parent_task_id = data.get("parentTaskId") or event.get("taskId")
                 if parent_task_id:
                     parent_parent = PlannerTreeState.infer_parent_id(str(parent_task_id))
@@ -429,7 +373,7 @@ class DashboardState:
                         or PlannerTreeState.infer_parent_id(str(subtask_id))
                     )
                     status = data.get("status", "")
-                    final = "complete" if status in ("complete", "partial") else "failed"
+                    final = "complete" if status == "complete" else "failed"
                     self.tree.update_status(str(subtask_id), final, parent_id)
 
             # -- Merge results (from new planner logging) -------------------
@@ -448,9 +392,10 @@ class DashboardState:
 
             # -- Iteration --------------------------------------------------
             elif msg == "Iteration complete":
-                self.planner_thinking = False
                 self.iteration = data.get("iteration", self.iteration)
                 n = data.get("tasks", 0)
+                self.active_workers = data.get("activeWorkers", self.active_workers)
+                self.completed_tasks = data.get("completedTasks", self.completed_tasks)
                 self._feed(ts_str, f"  -- iteration {self.iteration}  ({n} tasks)", "blue")
 
             # -- Reconciler -------------------------------------------------
@@ -462,18 +407,6 @@ class DashboardState:
                 ok = data.get("buildOk") and data.get("testsOk")
                 label = "all green" if ok else "NEEDS FIX"
                 self._feed(ts_str, f"  sweep: {label}", "green" if ok else "red")
-
-            # -- Worker progress (streamed from Modal sandboxes) ----------
-            elif msg == "Worker progress":
-                task_id = data.get("taskId", "")
-                phase = data.get("phase", "")
-                detail = (data.get("detail") or "")[:60]
-                if task_id:
-                    self.tree.worker_progress[task_id] = detail
-                if phase == "sandbox":
-                    self._feed(ts_str, f"  \u2699 {task_id}  {detail}", "cyan")
-                else:
-                    self._feed(ts_str, f"  \u25b8 {task_id}  {detail}", "dim")
 
             # -- Timeouts / errors ------------------------------------------
             elif msg == "Worker timed out":
@@ -488,11 +421,7 @@ class DashboardState:
                 self._feed(ts_str, f"  TIMEOUT  {tid}", "bold red")
 
             elif level == "error":
-                if agent_role == "planner" or agent_role == "root-planner":
-                    self.planner_thinking = False
                 self._feed(ts_str, f"  ERR  {msg[:60]}", "bold red")
-
-            self._derive_counts_from_tree()
 
     def _feed(self, ts: str, msg: str, style: str):
         self.activity.appendleft((ts, msg, style))
@@ -521,7 +450,6 @@ class DashboardState:
                 "cph": self.commits_per_hour,
                 "merge_rate": self.merge_success_rate,
                 "tokens": self.total_tokens,
-                "estimated_in_flight": self.estimated_in_flight,
                 "cost": self.total_tokens / 1000.0 * self.cost_rate,
                 "max_agents": self.max_agents,
                 "total_features": self.total_features,
@@ -536,30 +464,7 @@ class DashboardState:
                 "active_tab": self.active_tab,
                 "in_progress_scroll": self.in_progress_scroll,
                 "completed_scroll": self.completed_scroll,
-                "planner_thinking": self.planner_thinking,
-                "planner_thinking_since": self.planner_thinking_since,
-                "recent_velocity": self._compute_velocity(),
-                "sparkline": self._compute_sparkline(),
             }
-
-    def _compute_velocity(self) -> float:
-        now = time.time()
-        cutoff = now - 60
-        return sum(1 for t in self.completion_times if t > cutoff)
-
-    def _compute_sparkline(self) -> str:
-        now = time.time()
-        buckets = [0] * 10
-        bucket_width = 30.0
-        for t in self.completion_times:
-            age = now - t
-            if age > 300:
-                continue
-            idx = min(9, int(age / bucket_width))
-            buckets[9 - idx] += 1
-        chars = " ▁▂▃▄▅▆▇█"
-        mx = max(max(buckets), 1)
-        return "".join(chars[min(len(chars) - 1, int(b / mx * (len(chars) - 1)))] for b in buckets)
 
 
 # ---------------------------------------------------------------------------
@@ -638,16 +543,9 @@ def render_header(s: dict[str, Any]) -> Panel:
     mx = s["max_agents"]
     cph = s["cph"]
 
-    if s.get("planner_thinking"):
-        thinking_sec = int(time.time() - s.get("planner_thinking_since", time.time()))
-        dots = "●" * ((int(time.time() * 2) % 3) + 1)
-        center = f"[bold bright_yellow]PLANNING {dots}[/] [dim]({thinking_sec}s)[/]"
-    else:
-        center = f"[bold bright_white]{active}[/][dim]/{mx} agents[/]"
-
     tbl.add_row(
         f"[bold bright_cyan]AGENTSWARM[/]  [dim]{elapsed}[/]",
-        center,
+        f"[bold bright_white]{active}[/][dim]/{mx} agents[/]",
         f"[bold bright_green]{cph:,.0f}[/] [dim]commits/hr[/]",
     )
     return Panel(tbl, style="bright_cyan", height=3)
@@ -670,17 +568,8 @@ def render_metrics(s: dict[str, Any]) -> Panel:
     tbl.add_row("Failed",      f"[bright_red]{s['failed']}[/]" if s['failed'] else "[dim]0[/]")
     tbl.add_row("Pending",     f"[yellow]{s['pending']}[/]" if s['pending'] else "[dim]0[/]")
     tbl.add_row("Merge rate",  f"[{rate_color}]{rate * 100:.1f}%[/]")
-    in_flight = s.get("estimated_in_flight", 0)
-    token_label = f"[bright_cyan]{_fmt_tokens(s['tokens'])}[/]"
-    if in_flight > 0:
-        token_label += f" [dim](~+{_fmt_tokens(in_flight)} wip)[/]"
-    tbl.add_row("Tokens",      token_label)
+    tbl.add_row("Tokens",      f"[bright_cyan]{_fmt_tokens(s['tokens'])}[/]")
     tbl.add_row("Est. cost",   f"[bright_cyan]${s['cost']:.2f}[/]")
-
-    sparkline = s.get("sparkline", "          ")
-    velocity = s.get("recent_velocity", 0)
-    tbl.add_row("Velocity", f"[bright_green]{sparkline}[/] [bright_white]{velocity:.1f}[/][dim]/min[/]")
-    tbl.add_row("Running", f"[bright_yellow]{s['active']}[/]" if s['active'] else "[dim]0[/]")
 
     return Panel(tbl, title="[bold]METRICS[/]", border_style="bright_blue")
 
@@ -718,52 +607,20 @@ def render_grid(s: dict[str, Any]) -> Panel:
     def label_for(node: dict[str, Any], muted: bool = False) -> Text:
         role = node["role"]
         role_label = {
-            "root-planner": "root",
-            "planner": "plan",
-            "subplanner": "sub",
-            "worker": "wkr",
+            "root-planner": "root planner",
+            "planner": "planner",
+            "subplanner": "subplanner",
+            "worker": "worker",
         }.get(role, role)
         node_id = node["id"]
-        if len(node_id) > 20:
-            node_id = f"..{node_id[-18:]}"
-
-        desc = node.get("desc", "")
-        if desc and len(desc) > 32:
-            desc = desc[:30] + ".."
-
-        parts = [
-            meter(node["progress"], node["status"]),
-            f" [bold]{node_id}[/]",
-            f" [dim]({role_label})[/]",
-        ]
-        if desc:
-            parts.append(f' [italic bright_white]"{desc}"[/]')
-
-        parts.append(f" {status_markup(node['status'])}")
-
-        st = node["status"]
-        started = node.get("started_at")
-        if st in ("running", "assigned") and started:
-            elapsed = int(time.time() - started)
-            m, sec = divmod(elapsed, 60)
-            dur_str = f"{m}m{sec:02d}s" if m else f"{sec}s"
-            color = "bright_red" if elapsed > 300 else "bright_yellow" if elapsed > 180 else "dim"
-            parts.append(f" [{color}][{dur_str}][/]")
-
-        wp = node.get("worker_progress", "")
-        if st in ("running", "assigned") and wp:
-            parts.append(f" [dim]> {wp[:40]}[/]")
-
-        hm = node.get("handoff_metrics")
-        if st in ("complete", "failed") and hm:
-            la = hm.get("linesAdded", 0)
-            lr = hm.get("linesRemoved", 0)
-            fc = hm.get("filesChanged", 0)
-            tok = hm.get("tokensUsed", 0)
-            tok_str = f"{tok / 1000:.1f}K" if tok >= 1000 else str(tok)
-            parts.append(f" [dim]+{la}/-{lr} {fc}f {tok_str}tok[/]")
-
-        txt = Text.from_markup("".join(parts))
+        if len(node_id) > 44:
+            node_id = f"...{node_id[-41:]}"
+        pct = int(node["progress"] * 100)
+        txt = Text.from_markup(
+            f"{meter(node['progress'], node['status'])} "
+            f"[bold]{node_id}[/] [dim]({role_label})[/] "
+            f"{status_markup(node['status'])} [dim]{pct}%[/]"
+        )
         if muted:
             txt.stylize("dim")
         return txt
@@ -1013,10 +870,7 @@ def reader_subprocess(cmd: list[str], q: queue.Queue[Any], cwd: str):
 def reader_stdin(q: queue.Queue[Any]):
     """Read NDJSON from stdin (pipe mode)."""
     try:
-        while True:
-            line = sys.stdin.readline()
-            if not line:
-                break
+        for line in sys.stdin:
             line = line.strip()
             if not line:
                 continue
@@ -1024,42 +878,6 @@ def reader_stdin(q: queue.Queue[Any]):
                 q.put(json.loads(line))
             except json.JSONDecodeError:
                 pass
-    finally:
-        q.put(None)
-
-
-def reader_replay(filepath: str, speed: float, q: queue.Queue[Any]):
-    """Replay an NDJSON log file, preserving original timestamp deltas."""
-    try:
-        with open(filepath) as f:
-            lines = f.readlines()
-
-        events: list[tuple[int, dict[str, Any]]] = []
-        for raw in lines:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                ev = json.loads(raw)
-                ts = ev.get("timestamp", 0)
-                events.append((ts, ev))
-            except json.JSONDecodeError:
-                continue
-
-        if not events:
-            q.put(None)
-            return
-
-        base_ts = events[0][0]
-        wall_start = time.time()
-
-        for ts, ev in events:
-            delta_s = (ts - base_ts) / 1000.0
-            target_wall = wall_start + delta_s / speed
-            wait = target_wall - time.time()
-            if wait > 0:
-                time.sleep(wait)
-            q.put(ev)
     finally:
         q.put(None)
 
@@ -1136,16 +954,7 @@ def demo_generator(q: queue.Queue[Any], max_agents: int, total_features: int):
 
                     q.put({"timestamp": ts, "level": "info", "agentId": "main",
                            "agentRole": "root-planner", "message": "Task completed",
-                           "data": {"taskId": tid, "status": status,
-                                    "summary": f"Completed: {random.choice(_DEMO_DESCS)[:60]}",
-                                    "filesChanged": random.randint(1, 8),
-                                    "linesAdded": random.randint(20, 500),
-                                    "linesRemoved": random.randint(0, 100),
-                                    "filesCreated": random.randint(0, 3),
-                                    "filesModified": random.randint(1, 5),
-                                    "tokensUsed": tok,
-                                    "toolCallCount": random.randint(5, 40),
-                                    "durationMs": int((now - started) * 1000)}})
+                           "data": {"taskId": tid, "status": status}})
                     q.put({"timestamp": ts, "level": "info", "agentId": "main",
                            "agentRole": "root-planner", "message": "Task status",
                            "data": {"taskId": tid, "from": "running", "to": status}})
@@ -1192,19 +1001,10 @@ def demo_generator(q: queue.Queue[Any], max_agents: int, total_features: int):
                 q.put({"timestamp": ts, "level": "info", "agentId": "main",
                        "agentRole": "root-planner", "message": "Task status",
                        "data": {"taskId": tid, "parentId": parent_id or None,
-                                "from": "pending", "to": "running", "desc": desc}})
+                                "from": "pending", "to": "running"}})
                 active[tid] = now
 
-            for tid_active in list(active.keys()):
-                if random.random() < 0.3:
-                    phases = ["Cloning repo...", "Installing deps...", "Reading codebase...",
-                              "Writing implementation...", "Running tests...", "Committing changes...",
-                              f"Tool calls: {random.randint(5, 40)}", "Analyzing code structure..."]
-                    q.put({"timestamp": ts, "level": "info", "agentId": "worker-pool",
-                           "agentRole": "root-planner", "message": "Worker progress",
-                           "data": {"taskId": tid_active, "phase": "execution",
-                                    "detail": random.choice(phases)}})
-
+            # -- periodic metrics -------------------------------------------
             if random.random() < 0.35:
                 eh = max(elapsed / 3600, 0.001)
                 ma = merged + conflicts
@@ -1233,13 +1033,6 @@ def demo_generator(q: queue.Queue[Any], max_agents: int, total_features: int):
                                 "handoffs": random.randint(8, 20),
                                 "activeWorkers": len(active),
                                 "completedTasks": done}})
-
-            if done > 0 and done % 20 == 0 and random.random() < 0.5:
-                q.put({"timestamp": ts, "level": "info", "agentId": "planner",
-                       "agentRole": "root-planner",
-                       "message": "Calling LLM for task decomposition",
-                       "data": {"isFirstPlan": False, "historyMessages": random.randint(4, 20),
-                                "newHandoffs": random.randint(3, 10)}})
 
             # -- occasional reconciler sweep --------------------------------
             if random.random() < 0.015:
@@ -1355,64 +1148,23 @@ class KeyPoller:
 # Main
 # ---------------------------------------------------------------------------
 
-def print_json_loop(q: queue.Queue[Any]):
-    """Read from queue and print raw NDJSON to stdout."""
-    while True:
-        try:
-            item = q.get()
-            if item is None:
-                break
-            print(json.dumps(item), flush=True)
-        except KeyboardInterrupt:
-            break
-        except Exception:
-            break
-
-
 def main():
     ap = argparse.ArgumentParser(description="AgentSwarm Rich Terminal Dashboard")
     ap.add_argument("--demo", action="store_true", help="Synthetic data mode")
     ap.add_argument("--stdin", action="store_true", help="Read NDJSON from stdin")
-    ap.add_argument("--replay", type=str, default=None, metavar="FILE",
-                     help="Replay an NDJSON log file at original speed")
-    ap.add_argument("--speed", type=float, default=1.0,
-                     help="Replay speed multiplier (default 1.0, e.g. 10 = 10x faster)")
-    ap.add_argument("--json-only", action="store_true", help="Output raw NDJSON to stdout (no TUI)")
     ap.add_argument("--agents", type=int, default=100, help="Max agent slots (default 100)")
     ap.add_argument("--features", type=int, default=200, help="Total features (default 200)")
-    ap.add_argument("--hz", type=int, default=4, help="Refresh rate Hz (default 4)")
+    ap.add_argument("--hz", type=int, default=2, help="Refresh rate Hz (default 2)")
     ap.add_argument("--cost-rate", type=float, default=COST_PER_1K,
-                     help="$/1K tokens for cost estimate")
+                    help="$/1K tokens for cost estimate")
     args = ap.parse_args()
-
-    # If JSON-only, we don't need rich console or dashboard state
-    if args.json_only:
-        dq: queue.Queue[Any] = queue.Queue()
-        if args.demo:
-            thr = threading.Thread(target=demo_generator,
-                                   args=(dq, args.agents, args.features), daemon=True)
-        elif args.stdin:
-            thr = threading.Thread(target=reader_stdin, args=(dq,), daemon=True)
-        else:
-            cwd = os.path.dirname(os.path.abspath(__file__))
-            thr = threading.Thread(
-                target=reader_subprocess,
-                args=(["node", "packages/orchestrator/dist/main.js"], dq, cwd),
-                daemon=True,
-            )
-        thr.start()
-        print_json_loop(dq)
-        return
 
     console = Console()
     state = DashboardState(args.agents, args.features, args.cost_rate)
     dq: queue.Queue[Any] = queue.Queue()
 
     # start reader thread
-    if args.replay:
-        thr = threading.Thread(target=reader_replay,
-                               args=(args.replay, args.speed, dq), daemon=True)
-    elif args.demo:
+    if args.demo:
         thr = threading.Thread(target=demo_generator,
                                args=(dq, args.agents, args.features), daemon=True)
     elif args.stdin:
@@ -1427,7 +1179,7 @@ def main():
     thr.start()
 
     layout = make_layout()
-    interactive_zoom = sys.stdin.isatty() and not args.stdin
+    interactive_zoom = not args.stdin and sys.stdin.isatty()
 
     try:
         with KeyPoller(interactive_zoom) as key_poller:

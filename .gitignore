@@ -1,24 +1,98 @@
-node_modules
-dist
-.turbo
-.venv
+# Environment variables
 .env
-*.tsbuildinfo
-__pycache__
-*.pyc
-.DS_Store
-.claude
-.idea
-.vscode
-target-repo/
-state/
-.pi
-logs/
-stagehand-runs/
-gource-bin/
-gource.zip
-# demo.gource
-.gource-*.log
-gource-bin
+.env.local
+.env.production
+.env.staging
 
-agent-swarm-visualizer
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.turbo/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Generated projects (keep structure, ignore content)
+generated-projects/*
+!generated-projects/.gitkeep
+generated-repos/*
+!generated-repos/README.md
+
+# Modal.com
+.modal/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# API keys and secrets (double-check)
+secrets/
+credentials/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Dashboard artifacts
+stagehand-runs/
+screenshots/temp/
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Test artifacts
+coverage/
+.nyc_output/
+test-results/
+
+# Documentation build
+docs/_build/
+site/
